@@ -1,0 +1,27 @@
+% lists.sprolog - List operations
+
+% Member: member(X, L) - X is an element of L
+member(X, [X|T]).
+member(X, [H|T]) :- member(X, T).
+
+% Append: append(L1, L2, L3) - L3 is L1 followed by L2
+append([], L, L).
+append([H|T], L, [H|R]) :- append(T, L, R).
+
+% Length: length(L, N) - N is the length of L
+length([], 0).
+length([H|T], N) :- length(T, M), N is M + 1.
+
+% Reverse using accumulator
+reverse(L, R) :- reverse_acc(L, [], R).
+reverse_acc([], Acc, Acc).
+reverse_acc([H|T], Acc, R) :- reverse_acc(T, [H|Acc], R).
+
+% Last element
+last([X], X).
+last([H|T], X) :- last(T, X).
+
+% Queries
+?- member(2, [1, 2, 3]).
+?- append([1, 2], [3, 4], X).
+?- length([a, b, c], N).

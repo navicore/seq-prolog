@@ -1,0 +1,15 @@
+% basic.sprolog - Basic Prolog tests
+
+% Simple facts
+likes(mary, food).
+likes(mary, wine).
+likes(john, wine).
+likes(john, mary).
+
+% Simple rule
+happy(X) :- likes(X, wine).
+
+% Query tests
+?- likes(mary, food).
+?- happy(mary).
+?- happy(john).

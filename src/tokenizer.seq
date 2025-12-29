@@ -1,0 +1,919 @@
+# Tokenizer for SeqProlog - Edinburgh Prolog Syntax
+#
+# Handles:
+# - Atoms: lowercase identifiers, quoted atoms 'hello world'
+# - Variables: uppercase/underscore start (X, _Temp, _)
+# - Numbers: integers (42, -17), floats (3.14)
+# - Operators: :-, ?-, ., ,, (, ), [, ], |, =, \=, is, <, >, =<, >=, =:=, =\=
+# - Arithmetic: +, -, *, /, mod
+# - Comments: % line comment, /* block comment */
+
+include "term"
+
+# ============================================
+# Token Type (reusing from term.seq)
+# ============================================
+
+# Token and TokenList are defined in term.seq
+# union Token { Tok { text: String, span: SourceSpan } }
+# union TokenList { TNil, TCons { token: Token, rest: TokenList } }
+
+: make-token ( String SourceSpan -- Token )
+  Make-Tok ;
+
+: tok-text ( Token -- String )
+  0 variant.field-at ;
+
+: tok-span ( Token -- SourceSpan )
+  1 variant.field-at ;
+
+: tnil ( -- TokenList )
+  Make-TNil ;
+
+: tcons ( Token TokenList -- TokenList )
+  Make-TCons ;
+
+: tnil? ( TokenList -- Int )
+  variant.tag 0 = ;
+
+: tcar ( TokenList -- Token )
+  0 variant.field-at ;
+
+: tcdr ( TokenList -- TokenList )
+  1 variant.field-at ;
+
+# Get text of first token (convenience)
+: tcar-text ( TokenList -- String )
+  tcar tok-text ;
+
+# Get span of first token
+: tcar-span ( TokenList -- SourceSpan )
+  tcar tok-span ;
+
+# Reverse token list
+: trev ( TokenList -- TokenList )
+  tnil trev-loop ;
+
+: trev-loop ( TokenList TokenList -- TokenList )
+  swap dup tnil? if
+    drop
+  else
+    dup tcar swap tcdr
+    rot rot swap tcons
+    trev-loop
+  then
+;
+
+# ============================================
+# Tokenizer State
+# ============================================
+
+union TokPos {
+  Pos { pos: Int, line: Int, col: Int }
+}
+
+: make-pos ( Int Int Int -- TokPos )
+  Make-Pos ;
+
+: pos-pos ( TokPos -- Int )
+  0 variant.field-at ;
+
+: pos-line ( TokPos -- Int )
+  1 variant.field-at ;
+
+: pos-col ( TokPos -- Int )
+  2 variant.field-at ;
+
+union TokAccum {
+  Accum { text: String, start_line: Int, start_col: Int }
+}
+
+: make-accum ( String Int Int -- TokAccum )
+  Make-Accum ;
+
+: empty-accum ( Int Int -- TokAccum )
+  "" rot rot make-accum ;
+
+: accum-text ( TokAccum -- String )
+  0 variant.field-at ;
+
+: accum-start-line ( TokAccum -- Int )
+  1 variant.field-at ;
+
+: accum-start-col ( TokAccum -- Int )
+  2 variant.field-at ;
+
+union TokState {
+  TState { input: String, current: TokPos, accum: TokAccum, tokens: TokenList }
+}
+
+: make-state ( String TokPos TokAccum TokenList -- TokState )
+  Make-TState ;
+
+: state-input ( TokState -- String )
+  0 variant.field-at ;
+
+: state-current ( TokState -- TokPos )
+  1 variant.field-at ;
+
+: state-accum ( TokState -- TokAccum )
+  2 variant.field-at ;
+
+: state-tokens ( TokState -- TokenList )
+  3 variant.field-at ;
+
+: state-pos ( TokState -- Int )
+  state-current pos-pos ;
+
+: state-line ( TokState -- Int )
+  state-current pos-line ;
+
+: state-col ( TokState -- Int )
+  state-current pos-col ;
+
+: state-tok ( TokState -- String )
+  state-accum accum-text ;
+
+: state-tok-start-line ( TokState -- Int )
+  state-accum accum-start-line ;
+
+: state-tok-start-col ( TokState -- Int )
+  state-accum accum-start-col ;
+
+# ============================================
+# State Update Helpers
+# ============================================
+
+: advance-col ( TokState -- TokState )
+  dup state-input
+  over state-pos 1 add
+  2 pick state-line
+  3 pick state-col 1 add
+  make-pos
+  2 pick state-accum
+  3 pick state-tokens
+  make-state nip
+;
+
+: advance-newline ( TokState -- TokState )
+  dup state-input
+  over state-pos 1 add
+  2 pick state-line 1 add
+  1
+  make-pos
+  2 pick state-accum
+  3 pick state-tokens
+  make-state nip
+;
+
+: start-token ( TokState -- TokState )
+  dup state-input
+  over state-current
+  2 pick state-line
+  3 pick state-col
+  empty-accum
+  3 pick state-tokens
+  make-state nip
+;
+
+: append-to-token ( TokState String -- TokState )
+  over state-accum accum-text swap string.concat
+  over state-accum accum-start-line
+  2 pick state-accum accum-start-col
+  make-accum
+  over state-input
+  2 pick state-current
+  rot
+  3 pick state-tokens
+  make-state nip
+;
+
+: make-token-span ( TokState -- SourceSpan )
+  dup state-tok-start-line
+  over state-tok-start-col
+  2 pick state-line
+  3 pick state-col
+  make-span nip
+;
+
+: emit-token ( TokState -- TokState )
+  dup state-tok string.empty? if
+  else
+    dup state-input
+    over state-current
+    2 pick state-line
+    3 pick state-col
+    empty-accum
+    3 pick state-tok
+    4 pick make-token-span
+    make-token
+    4 pick state-tokens
+    tcons
+    make-state nip
+  then
+;
+
+: emit-single-char ( TokState String -- TokState )
+  over state-line
+  2 pick state-col
+  3 pick state-line
+  4 pick state-col 1 add
+  make-span
+  make-token
+  over state-tokens tcons
+  over state-input
+  2 pick state-pos 1 add
+  3 pick state-line
+  4 pick state-col 1 add
+  make-pos
+  3 pick state-line
+  4 pick state-col 1 add
+  empty-accum
+  3 roll
+  make-state nip
+;
+
+: emit-two-char ( TokState String -- TokState )
+  over state-line
+  2 pick state-col
+  3 pick state-line
+  4 pick state-col 2 add
+  make-span
+  make-token
+  over state-tokens tcons
+  over state-input
+  2 pick state-pos 2 add
+  3 pick state-line
+  4 pick state-col 2 add
+  make-pos
+  3 pick state-line
+  4 pick state-col 2 add
+  empty-accum
+  3 roll
+  make-state nip
+;
+
+: emit-three-char ( TokState String -- TokState )
+  over state-line
+  2 pick state-col
+  3 pick state-line
+  4 pick state-col 3 add
+  make-span
+  make-token
+  over state-tokens tcons
+  over state-input
+  2 pick state-pos 3 add
+  3 pick state-line
+  4 pick state-col 3 add
+  make-pos
+  3 pick state-line
+  4 pick state-col 3 add
+  empty-accum
+  3 roll
+  make-state nip
+;
+
+# ============================================
+# Character Classification
+# ============================================
+
+: is-whitespace? ( Int -- Int )
+  dup 32 = over 9 = or over 13 = or swap 10 = or ;
+
+: is-digit? ( Int -- Int )
+  dup 48 >= swap 57 <= and ;
+
+: is-lowercase? ( Int -- Int )
+  dup 97 >= swap 122 <= and ;
+
+: is-uppercase? ( Int -- Int )
+  dup 65 >= swap 90 <= and ;
+
+: is-alpha? ( Int -- Int )
+  dup is-lowercase? swap is-uppercase? or ;
+
+: is-alnum? ( Int -- Int )
+  dup is-alpha? swap is-digit? or ;
+
+: is-atom-start? ( Int -- Int )
+  is-lowercase? ;
+
+: is-var-start? ( Int -- Int )
+  dup is-uppercase? swap 95 = or ;  # uppercase or _
+
+: is-atom-cont? ( Int -- Int )
+  dup is-alnum? swap 95 = or ;  # alphanumeric or _
+
+# ============================================
+# Main Tokenizer
+# ============================================
+
+: tokenize ( String -- TokenList )
+  0 1 1 make-pos
+  1 1 empty-accum
+  tnil
+  make-state
+  tokenize-loop
+  emit-token
+  state-tokens trev
+;
+
+: tokenize-loop ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos <= if
+  else
+    dup state-input over state-pos string.char-at
+    handle-char-dispatch
+    tokenize-loop
+  then
+;
+
+: handle-char-dispatch ( TokState Int -- TokState )
+  # Newline
+  dup 10 = if
+    drop handle-newline
+  else
+    # Whitespace
+    dup is-whitespace? if
+      drop handle-whitespace
+    else
+      # Percent - line comment
+      dup 37 = if
+        drop handle-line-comment
+      else
+        # Slash - possible block comment or division
+        dup 47 = if
+          drop handle-slash
+        else
+          # Open paren
+          dup 40 = if
+            drop handle-lparen
+          else
+            # Close paren
+            dup 41 = if
+              drop handle-rparen
+            else
+              # Open bracket
+              dup 91 = if
+                drop handle-lbracket
+              else
+                # Close bracket
+                dup 93 = if
+                  drop handle-rbracket
+                else
+                  # Pipe
+                  dup 124 = if
+                    drop handle-pipe
+                  else
+                    # Comma
+                    dup 44 = if
+                      drop handle-comma
+                    else
+                      # Dot
+                      dup 46 = if
+                        drop handle-dot
+                      else
+                        # Colon (for :-)
+                        dup 58 = if
+                          drop handle-colon
+                        else
+                          # Question mark (for ?-)
+                          dup 63 = if
+                            drop handle-question
+                          else
+                            # Equals
+                            dup 61 = if
+                              drop handle-equals
+                            else
+                              # Backslash (for \=, \+)
+                              dup 92 = if
+                                drop handle-backslash
+                              else
+                                # Less than
+                                dup 60 = if
+                                  drop handle-less
+                                else
+                                  # Greater than
+                                  dup 62 = if
+                                    drop handle-greater
+                                  else
+                                    # Plus
+                                    dup 43 = if
+                                      drop handle-plus
+                                    else
+                                      # Minus
+                                      dup 45 = if
+                                        drop handle-minus
+                                      else
+                                        # Asterisk
+                                        dup 42 = if
+                                          drop handle-asterisk
+                                        else
+                                          # Single quote
+                                          dup 39 = if
+                                            drop handle-quoted-atom
+                                          else
+                                            # Digit - number
+                                            dup is-digit? if
+                                              drop handle-number
+                                            else
+                                              # Lowercase - atom
+                                              dup is-atom-start? if
+                                                drop handle-atom
+                                              else
+                                                # Uppercase/underscore - variable
+                                                dup is-var-start? if
+                                                  drop handle-variable
+                                                else
+                                                  # Unknown - skip
+                                                  drop advance-col
+                                                then
+                                              then
+                                            then
+                                          then
+                                        then
+                                      then
+                                    then
+                                  then
+                                then
+                              then
+                            then
+                          then
+                        then
+                      then
+                    then
+                  then
+                then
+              then
+            then
+          then
+        then
+      then
+    then
+  then
+;
+
+# ============================================
+# Character Handlers
+# ============================================
+
+: handle-newline ( TokState -- TokState )
+  emit-token advance-newline start-token
+;
+
+: handle-whitespace ( TokState -- TokState )
+  emit-token advance-col start-token
+;
+
+: handle-lparen ( TokState -- TokState )
+  emit-token "(" emit-single-char start-token
+;
+
+: handle-rparen ( TokState -- TokState )
+  emit-token ")" emit-single-char start-token
+;
+
+: handle-lbracket ( TokState -- TokState )
+  emit-token "[" emit-single-char start-token
+;
+
+: handle-rbracket ( TokState -- TokState )
+  emit-token "]" emit-single-char start-token
+;
+
+: handle-pipe ( TokState -- TokState )
+  emit-token "|" emit-single-char start-token
+;
+
+: handle-comma ( TokState -- TokState )
+  emit-token "," emit-single-char start-token
+;
+
+: handle-dot ( TokState -- TokState )
+  emit-token "." emit-single-char start-token
+;
+
+: handle-plus ( TokState -- TokState )
+  emit-token "+" emit-single-char start-token
+;
+
+: handle-asterisk ( TokState -- TokState )
+  emit-token "*" emit-single-char start-token
+;
+
+: handle-colon ( TokState -- TokState )
+  emit-token
+  # Check for :-
+  dup state-input string.length
+  over state-pos 1 add > if
+    dup state-input over state-pos 1 add string.char-at
+    45 = if  # '-'
+      ":-" emit-two-char start-token
+    else
+      ":" emit-single-char start-token
+    then
+  else
+    ":" emit-single-char start-token
+  then
+;
+
+: handle-question ( TokState -- TokState )
+  emit-token
+  # Check for ?-
+  dup state-input string.length
+  over state-pos 1 add > if
+    dup state-input over state-pos 1 add string.char-at
+    45 = if  # '-'
+      "?-" emit-two-char start-token
+    else
+      "?" emit-single-char start-token
+    then
+  else
+    "?" emit-single-char start-token
+  then
+;
+
+: handle-equals ( TokState -- TokState )
+  emit-token
+  # Check for =:= or =\= or =< or ==
+  dup state-input string.length
+  over state-pos 1 add > if
+    dup state-input over state-pos 1 add string.char-at
+    dup 58 = if  # ':'
+      drop
+      # Check for =:=
+      dup state-input string.length
+      over state-pos 2 add > if
+        dup state-input over state-pos 2 add string.char-at
+        61 = if  # '='
+          "=:=" emit-three-char start-token
+        else
+          "=" emit-single-char start-token
+        then
+      else
+        "=" emit-single-char start-token
+      then
+    else
+      dup 92 = if  # '\'
+        drop
+        # Check for =\=
+        dup state-input string.length
+        over state-pos 2 add > if
+          dup state-input over state-pos 2 add string.char-at
+          61 = if  # '='
+            "=\\=" emit-three-char start-token
+          else
+            "=" emit-single-char start-token
+          then
+        else
+          "=" emit-single-char start-token
+        then
+      else
+        dup 60 = if  # '<'
+          drop "=<" emit-two-char start-token
+        else
+          dup 61 = if  # '='
+            drop "==" emit-two-char start-token
+          else
+            drop "=" emit-single-char start-token
+          then
+        then
+      then
+    then
+  else
+    "=" emit-single-char start-token
+  then
+;
+
+: handle-backslash ( TokState -- TokState )
+  emit-token
+  # Check for \= or \+
+  dup state-input string.length
+  over state-pos 1 add > if
+    dup state-input over state-pos 1 add string.char-at
+    dup 61 = if  # '='
+      drop "\\=" emit-two-char start-token
+    else
+      dup 43 = if  # '+'
+        drop "\\+" emit-two-char start-token
+      else
+        drop "\\" emit-single-char start-token
+      then
+    then
+  else
+    "\\" emit-single-char start-token
+  then
+;
+
+: handle-less ( TokState -- TokState )
+  emit-token "<" emit-single-char start-token
+;
+
+: handle-greater ( TokState -- TokState )
+  emit-token
+  # Check for >=
+  dup state-input string.length
+  over state-pos 1 add > if
+    dup state-input over state-pos 1 add string.char-at
+    61 = if  # '='
+      ">=" emit-two-char start-token
+    else
+      ">" emit-single-char start-token
+    then
+  else
+    ">" emit-single-char start-token
+  then
+;
+
+: handle-minus ( TokState -- TokState )
+  emit-token
+  # Check if next char is a digit (negative number)
+  dup state-input string.length
+  over state-pos 1 add > if
+    dup state-input over state-pos 1 add string.char-at
+    is-digit? if
+      # Negative number - include minus in token
+      start-token
+      "-" append-to-token
+      advance-col
+      scan-number
+    else
+      "-" emit-single-char start-token
+    then
+  else
+    "-" emit-single-char start-token
+  then
+;
+
+: handle-slash ( TokState -- TokState )
+  emit-token
+  # Check for /* block comment
+  dup state-input string.length
+  over state-pos 1 add > if
+    dup state-input over state-pos 1 add string.char-at
+    42 = if  # '*'
+      advance-col advance-col
+      skip-block-comment
+      start-token
+    else
+      "/" emit-single-char start-token
+    then
+  else
+    "/" emit-single-char start-token
+  then
+;
+
+# ============================================
+# Comment Handlers
+# ============================================
+
+: handle-line-comment ( TokState -- TokState )
+  emit-token skip-to-eol
+;
+
+: skip-to-eol ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos <= if
+    start-token
+  else
+    dup state-input over state-pos string.char-at
+    10 = if  # newline
+      advance-newline start-token
+    else
+      advance-col skip-to-eol
+    then
+  then
+;
+
+: skip-block-comment ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos <= if
+    # End of input - unterminated comment
+  else
+    dup state-input over state-pos string.char-at
+    dup 42 = if  # '*'
+      drop
+      # Check for */
+      dup state-input string.length
+      over state-pos 1 add > if
+        dup state-input over state-pos 1 add string.char-at
+        47 = if  # '/'
+          advance-col advance-col  # skip */
+        else
+          advance-col skip-block-comment
+        then
+      else
+        advance-col
+      then
+    else
+      dup 10 = if  # newline
+        drop advance-newline skip-block-comment
+      else
+        drop advance-col skip-block-comment
+      then
+    then
+  then
+;
+
+# ============================================
+# Atom Handler
+# ============================================
+
+: handle-atom ( TokState -- TokState )
+  emit-token start-token
+  dup state-input over state-pos 1 string.substring
+  append-to-token
+  advance-col
+  scan-atom
+;
+
+: scan-atom ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos <= if
+  else
+    dup state-input over state-pos string.char-at
+    dup is-atom-cont? if
+      char->string append-to-token
+      advance-col
+      scan-atom
+    else
+      drop
+    then
+  then
+;
+
+# ============================================
+# Quoted Atom Handler
+# ============================================
+
+: handle-quoted-atom ( TokState -- TokState )
+  emit-token start-token
+  advance-col  # skip opening quote
+  scan-quoted-atom
+;
+
+: scan-quoted-atom ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos <= if
+    # End of input - unterminated quoted atom
+  else
+    dup state-input over state-pos string.char-at
+    dup 39 = if  # closing quote
+      drop advance-col  # skip closing quote
+    else
+      dup 92 = if  # backslash - escape
+        drop handle-quoted-escape scan-quoted-atom
+      else
+        char->string append-to-token
+        advance-col
+        scan-quoted-atom
+      then
+    then
+  then
+;
+
+: handle-quoted-escape ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos 1 add > if
+    dup state-input over state-pos 1 add string.char-at
+    dup 39 = if  # escaped quote
+      drop 39 char->string append-to-token
+      advance-col advance-col
+    else
+      dup 92 = if  # escaped backslash
+        drop 92 char->string append-to-token
+        advance-col advance-col
+      else
+        dup 110 = if  # \n
+          drop 10 char->string append-to-token
+          advance-col advance-col
+        else
+          # Unknown escape - include literally
+          char->string append-to-token
+          advance-col advance-col
+        then
+      then
+    then
+  else
+    advance-col
+  then
+;
+
+# ============================================
+# Variable Handler
+# ============================================
+
+: handle-variable ( TokState -- TokState )
+  emit-token start-token
+  dup state-input over state-pos 1 string.substring
+  append-to-token
+  advance-col
+  scan-variable
+;
+
+: scan-variable ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos <= if
+  else
+    dup state-input over state-pos string.char-at
+    dup is-atom-cont? if
+      char->string append-to-token
+      advance-col
+      scan-variable
+    else
+      drop
+    then
+  then
+;
+
+# ============================================
+# Number Handler
+# ============================================
+
+: handle-number ( TokState -- TokState )
+  emit-token start-token
+  dup state-input over state-pos 1 string.substring
+  append-to-token
+  advance-col
+  scan-number
+;
+
+: scan-number ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos <= if
+  else
+    dup state-input over state-pos string.char-at
+    dup is-digit? if
+      char->string append-to-token
+      advance-col
+      scan-number
+    else
+      dup 46 = if  # '.' - possible float
+        drop
+        # Check if next is digit (float) or end (integer)
+        dup state-input string.length
+        over state-pos 1 add > if
+          dup state-input over state-pos 1 add string.char-at
+          is-digit? if
+            "." append-to-token advance-col
+            scan-float-decimal
+          else
+            # Just a dot - don't consume it
+          then
+        else
+          # End of input
+        then
+      else
+        drop
+      then
+    then
+  then
+;
+
+: scan-float-decimal ( TokState -- TokState )
+  dup state-input string.length
+  over state-pos <= if
+  else
+    dup state-input over state-pos string.char-at
+    is-digit? if
+      dup state-input over state-pos 1 string.substring
+      append-to-token
+      advance-col
+      scan-float-decimal
+    else
+    then
+  then
+;
+
+# ============================================
+# Debug Utilities
+# ============================================
+
+: print-tokens ( TokenList -- )
+  dup tnil? if
+    drop
+  else
+    dup tcar tok-text io.write-line
+    tcdr print-tokens
+  then
+;
+
+: print-tokens-with-pos ( TokenList -- )
+  dup tnil? if
+    drop
+  else
+    dup tcar
+    dup tok-text
+    " @ " string.concat
+    swap tok-span
+    dup span? if
+      dup span-start-line int->string string.concat
+      ":" string.concat
+      swap span-start-col int->string string.concat
+    else
+      drop "<no-span>" string.concat
+    then
+    io.write-line
+    tcdr print-tokens-with-pos
+  then
+;

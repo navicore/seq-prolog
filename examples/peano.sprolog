@@ -1,0 +1,21 @@
+% peano.sprolog - Peano arithmetic
+
+% Natural numbers: zero, s(zero), s(s(zero)), ...
+nat(zero).
+nat(s(X)) :- nat(X).
+
+% Addition: add(X, Y, Z) means X + Y = Z
+add(zero, X, X).
+add(s(X), Y, s(Z)) :- add(X, Y, Z).
+
+% Multiplication: mul(X, Y, Z) means X * Y = Z
+mul(zero, X, zero).
+mul(s(X), Y, Z) :- mul(X, Y, W), add(W, Y, Z).
+
+% Less than or equal
+leq(zero, X) :- nat(X).
+leq(s(X), s(Y)) :- leq(X, Y).
+
+% Queries
+?- add(s(s(zero)), s(s(s(zero))), X).
+?- nat(s(s(s(zero)))).

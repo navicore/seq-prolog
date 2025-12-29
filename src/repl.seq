@@ -1,0 +1,241 @@
+# REPL/CLI for SeqProlog
+#
+# Currently: Parses Prolog and displays AST (foundation for compiler)
+# Future: Will compile Prolog to Seq and execute
+
+include "parser"
+include "version"
+
+# ============================================
+# Main Entry Point
+# ============================================
+
+: main ( -- )
+  args.count 1 > if
+    1 args.at
+    dup "--version" string.equal? if
+      drop print-version
+    else
+      dup "--help" string.equal? if
+        drop print-help
+      else
+        dup "--parse" string.equal? if
+          drop
+          args.count 2 > if
+            2 args.at parse-file
+          else
+            "Error: --parse requires a filename" io.write-line
+          then
+        else
+          # Default: parse and show AST (placeholder for future compilation)
+          parse-file
+        then
+      then
+    then
+  else
+    run-repl
+  then
+;
+
+# ============================================
+# Version and Help
+# ============================================
+
+: print-version ( -- )
+  seqprolog-name " " string.concat
+  seqprolog-version string.concat
+  io.write-line
+;
+
+: print-help ( -- )
+  print-version
+  "" io.write-line
+  "Usage: seqprolog [options] [file.sprolog]" io.write-line
+  "" io.write-line
+  "Options:" io.write-line
+  "  --version    Show version" io.write-line
+  "  --help       Show this help" io.write-line
+  "  --parse FILE Parse and display AST" io.write-line
+  "" io.write-line
+  "Note: Compilation backend pending generator support in Seq." io.write-line
+  "      See: https://github.com/navicore/patch-seq/issues/131" io.write-line
+;
+
+# ============================================
+# File Parsing (AST Display)
+# ============================================
+
+: parse-file ( String -- )
+  dup file.read-to-string
+  dup "" string.equal? if
+    drop "Error: Could not read file: " swap string.concat io.write-line
+  else
+    nip
+    "Parsing: " io.write
+    "" io.write-line
+    parse-and-display
+  then
+;
+
+: parse-and-display ( String -- )
+  tokenize
+  "Tokens:" io.write-line
+  dup print-tokens-with-pos
+  "" io.write-line
+
+  "Parsing clauses..." io.write-line
+  parse-clauses-display
+;
+
+: parse-clauses-display ( TokenList -- )
+  dup tnil? if
+    drop
+    "" io.write-line
+    "Parse complete." io.write-line
+  else
+    0 parse-clause-from-tokens-simple
+    # Stack: result remaining
+    swap
+    dup parse-ok-clause? if
+      "Clause: " io.write
+      parse-clause-value clause-to-string io.write-line
+    else
+      dup parse-ok-query? if
+        "Query: ?- " io.write
+        parse-query-goals goals-to-string io.write-line
+      else
+        dup parse-err? if
+          "Parse error: " io.write
+          parse-err-message io.write-line
+        else
+          drop
+        then
+      then
+    then
+    parse-clauses-display
+  then
+;
+
+# Simplified clause parsing for display (reusing parser internals)
+: parse-clause-from-tokens-simple ( TokenList Int -- ParseResult TokenList )
+  over tnil? if
+    "End of input" no-span make-parse-err
+    swap
+  else
+    over peek-text "?-" string.equal? if
+      # Query
+      swap tcdr swap  # skip ?-
+      parse-goals
+      over parse-ok-term? if
+        over parse-term-remaining
+        dup peek-text "." string.equal? if
+          tcdr
+          rot parse-term-value term-to-goals
+          swap make-parse-ok-query
+          swap
+        else
+          drop
+          "Expected '.' after query" no-span make-parse-err
+          nip swap
+        then
+      else
+        swap
+      then
+    else
+      # Clause
+      parse-term-with-counter
+      # Stack: result counter
+      swap
+      dup parse-ok-term? if
+        dup parse-term-remaining
+        dup peek-text "." string.equal? if
+          tcdr
+          swap parse-term-value make-fact
+          swap make-parse-ok-clause
+          rot drop  # drop counter
+          swap
+        else
+          dup peek-text ":-" string.equal? if
+            tcdr
+            # Stack: result remaining counter
+            swap rot  # counter result remaining
+            rot drop  # drop old result
+            swap  # remaining counter
+            parse-goals
+            # Stack: remaining goals-result counter
+            rot drop  # drop counter
+            over parse-ok-term? if
+              over parse-term-remaining
+              dup peek-text "." string.equal? if
+                tcdr
+                # Stack: remaining goals-result new-remaining
+                nip
+                swap parse-term-value term-to-goals
+                gnull make-clause  # placeholder head - need to fix
+                swap make-parse-ok-clause
+                swap
+              else
+                drop
+                "Expected '.' after clause body" no-span make-parse-err
+                nip swap
+              then
+            else
+              swap
+            then
+          else
+            drop drop
+            "Expected '.' or ':-'" no-span make-parse-err
+            swap drop swap
+          then
+        then
+      else
+        rot drop swap
+      then
+    then
+  then
+;
+
+# ============================================
+# Interactive REPL (Parse Mode)
+# ============================================
+
+: run-repl ( -- )
+  print-version
+  "Parse mode (compilation pending generator support)" io.write-line
+  "Enter Prolog clauses or queries. Type 'halt.' to exit." io.write-line
+  "" io.write-line
+  repl-loop
+;
+
+: repl-loop ( -- )
+  "| " io.write
+  io.read-line
+  dup "" string.equal? if
+    drop
+    "Goodbye!" io.write-line
+  else
+    dup "halt." string.equal? if
+      drop
+      "Goodbye!" io.write-line
+    else
+      # Parse and display
+      tokenize
+      0 parse-clause-from-tokens-simple
+      drop  # drop remaining tokens
+      dup parse-ok-clause? if
+        "Parsed clause: " io.write
+        parse-clause-value clause-to-string io.write-line
+      else
+        dup parse-ok-query? if
+          "Parsed query: ?- " io.write
+          parse-query-goals goals-to-string io.write-line
+          "(Execution pending compiler implementation)" io.write-line
+        else
+          "Parse error: " io.write
+          parse-err-message io.write-line
+        then
+      then
+      repl-loop
+    then
+  then
+;

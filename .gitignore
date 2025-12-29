@@ -1,0 +1,27 @@
+# Build artifacts
+target/
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Seq compiler intermediates
+*.ll
+*.s
+*.o
+
+# Test artifacts
+tests/seq/test_*
+!tests/seq/test_*.seq
+
+# Local configuration
+.envrc
+.direnv/

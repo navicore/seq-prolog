@@ -1,0 +1,51 @@
+# Test tokenizer for SeqProlog
+
+include "../../src/tokenizer"
+
+: main ( -- )
+  "Testing SeqProlog tokenizer..." io.write-line
+
+  # Test basic tokens
+  "parent(tom, mary)." tokenize
+  "Token count: " io.write
+  dup token-count int->string io.write-line
+  print-tokens
+  "" io.write-line
+
+  # Test query
+  "?- parent(X, mary)." tokenize
+  "Query tokens:" io.write-line
+  print-tokens
+  "" io.write-line
+
+  # Test rule
+  "grandparent(X, Z) :- parent(X, Y), parent(Y, Z)." tokenize
+  "Rule tokens:" io.write-line
+  print-tokens
+  "" io.write-line
+
+  # Test list
+  "[1, 2, 3]" tokenize
+  "List tokens:" io.write-line
+  print-tokens
+  "" io.write-line
+
+  # Test arithmetic
+  "X is 3 + 4 * 2" tokenize
+  "Arithmetic tokens:" io.write-line
+  print-tokens
+  "" io.write-line
+
+  "All tokenizer tests passed!" io.write-line
+;
+
+: token-count ( TokenList -- Int )
+  0 token-count-loop ;
+
+: token-count-loop ( TokenList Int -- Int )
+  swap dup tnil? if
+    drop
+  else
+    tcdr swap 1 add token-count-loop
+  then
+;

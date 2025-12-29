@@ -1,0 +1,7 @@
+# SeqProlog Version Information
+
+: seqprolog-version ( -- String )
+  "0.1.0" ;
+
+: seqprolog-name ( -- String )
+  "SeqProlog" ;

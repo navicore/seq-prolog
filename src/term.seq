@@ -1,0 +1,805 @@
+# Prolog Term Data Types for SeqProlog
+#
+# Algebraic Data Types for Prolog terms:
+#
+#   Term = TAtom String | TVar String Int | TCompound String TermList
+#        | TInt Int | TFloat Float | TList Term Term
+#   TermList = TLNil | TLCons Term TermList
+#   Clause = Clause Term GoalList
+#   GoalList = GNil | GCons Term GoalList
+#   ClauseDB = DBEmpty | DBCons Clause ClauseDB
+#   Subst = SubstEmpty | SubstExtend Binding Subst
+#   Binding = Bind Int Term
+#
+# All types are defined here to support mutual recursion.
+
+# ============================================
+# Source Location (for error reporting)
+# ============================================
+
+union SourceSpan {
+  NoSpan
+  Span { start_line: Int, start_col: Int, end_line: Int, end_col: Int }
+}
+
+: no-span ( -- SourceSpan )
+  Make-NoSpan ;
+
+: make-span ( Int Int Int Int -- SourceSpan )
+  Make-Span ;
+
+: span? ( SourceSpan -- Int )
+  variant.tag 1 = ;
+
+: no-span? ( SourceSpan -- Int )
+  variant.tag 0 = ;
+
+: span-start-line ( SourceSpan -- Int )
+  0 variant.field-at ;
+
+: span-start-col ( SourceSpan -- Int )
+  1 variant.field-at ;
+
+: span-end-line ( SourceSpan -- Int )
+  2 variant.field-at ;
+
+: span-end-col ( SourceSpan -- Int )
+  3 variant.field-at ;
+
+# Combine two spans into one covering both
+: span-combine ( SourceSpan SourceSpan -- SourceSpan )
+  over no-span? if
+    nip
+  else
+    dup no-span? if
+      drop
+    else
+      over span-start-line
+      2 pick span-start-col
+      2 pick span-end-line
+      3 pick span-end-col
+      make-span nip nip
+    then
+  then
+;
+
+# ============================================
+# Prolog Terms
+# ============================================
+
+# Forward declarations for mutual recursion
+union TermList {
+  TLNil
+  TLCons { head: Term, tail: TermList }
+}
+
+# Prolog terms
+# Tags: 0=TAtom, 1=TVar, 2=TCompound, 3=TInt, 4=TFloat, 5=TList
+union Term {
+  TAtom { name: String, span: SourceSpan }
+  TVar { name: String, id: Int, span: SourceSpan }
+  TCompound { functor: String, args: TermList, span: SourceSpan }
+  TInt { value: Int, span: SourceSpan }
+  TFloat { value: Float, span: SourceSpan }
+  TList { head: Term, tail: Term, span: SourceSpan }
+}
+
+# ============================================
+# Term Constructors
+# ============================================
+
+# With explicit span
+: tatom-at ( String SourceSpan -- Term )
+  Make-TAtom ;
+
+: tvar-at ( String Int SourceSpan -- Term )
+  Make-TVar ;
+
+: tcompound-at ( String TermList SourceSpan -- Term )
+  Make-TCompound ;
+
+: tint-at ( Int SourceSpan -- Term )
+  Make-TInt ;
+
+: tfloat-at ( Float SourceSpan -- Term )
+  Make-TFloat ;
+
+: tlist-at ( Term Term SourceSpan -- Term )
+  Make-TList ;
+
+# Without span (use NoSpan)
+: tatom ( String -- Term )
+  no-span Make-TAtom ;
+
+: tvar ( String Int -- Term )
+  no-span Make-TVar ;
+
+: tcompound ( String TermList -- Term )
+  no-span Make-TCompound ;
+
+: tint ( Int -- Term )
+  no-span Make-TInt ;
+
+: tfloat ( Float -- Term )
+  no-span Make-TFloat ;
+
+: tlist ( Term Term -- Term )
+  no-span Make-TList ;
+
+# Empty list atom
+: tempty-list ( -- Term )
+  "[]" tatom ;
+
+: tempty-list-at ( SourceSpan -- Term )
+  "[]" swap tatom-at ;
+
+# ============================================
+# Term Predicates
+# ============================================
+
+: tatom? ( Term -- Int )
+  variant.tag 0 = ;
+
+: tvar? ( Term -- Int )
+  variant.tag 1 = ;
+
+: tcompound? ( Term -- Int )
+  variant.tag 2 = ;
+
+: tint? ( Term -- Int )
+  variant.tag 3 = ;
+
+: tfloat? ( Term -- Int )
+  variant.tag 4 = ;
+
+: tlist? ( Term -- Int )
+  variant.tag 5 = ;
+
+# Check if term is the empty list atom []
+: tempty-list? ( Term -- Int )
+  dup tatom? if
+    tatom-name "[]" string.equal?
+  else
+    drop 0
+  then
+;
+
+# Check if term is a proper list (ends with [])
+: tproper-list? ( Term -- Int )
+  dup tempty-list? if
+    drop 1
+  else
+    dup tlist? if
+      tlist-tail tproper-list?
+    else
+      drop 0
+    then
+  then
+;
+
+# ============================================
+# Term Accessors
+# ============================================
+
+: tatom-name ( Term -- String )
+  0 variant.field-at ;
+
+: tatom-span ( Term -- SourceSpan )
+  1 variant.field-at ;
+
+: tvar-name ( Term -- String )
+  0 variant.field-at ;
+
+: tvar-id ( Term -- Int )
+  1 variant.field-at ;
+
+: tvar-span ( Term -- SourceSpan )
+  2 variant.field-at ;
+
+: tcompound-functor ( Term -- String )
+  0 variant.field-at ;
+
+: tcompound-args ( Term -- TermList )
+  1 variant.field-at ;
+
+: tcompound-span ( Term -- SourceSpan )
+  2 variant.field-at ;
+
+: tint-value ( Term -- Int )
+  0 variant.field-at ;
+
+: tint-span ( Term -- SourceSpan )
+  1 variant.field-at ;
+
+: tfloat-value ( Term -- Float )
+  0 variant.field-at ;
+
+: tfloat-span ( Term -- SourceSpan )
+  1 variant.field-at ;
+
+: tlist-head ( Term -- Term )
+  0 variant.field-at ;
+
+: tlist-tail ( Term -- Term )
+  1 variant.field-at ;
+
+: tlist-span ( Term -- SourceSpan )
+  2 variant.field-at ;
+
+# Get span from any term
+: term-span ( Term -- SourceSpan )
+  dup tatom? if tatom-span else
+  dup tvar? if tvar-span else
+  dup tcompound? if tcompound-span else
+  dup tint? if tint-span else
+  dup tfloat? if tfloat-span else
+  dup tlist? if tlist-span else
+  drop no-span
+  then then then then then then
+;
+
+# ============================================
+# TermList Operations
+# ============================================
+
+: tlnil ( -- TermList )
+  Make-TLNil ;
+
+: tlcons ( Term TermList -- TermList )
+  Make-TLCons ;
+
+: tlnil? ( TermList -- Int )
+  variant.tag 0 = ;
+
+: tlcar ( TermList -- Term )
+  0 variant.field-at ;
+
+: tlcdr ( TermList -- TermList )
+  1 variant.field-at ;
+
+# Length of term list
+: tllen ( TermList -- Int )
+  0 tllen-loop ;
+
+: tllen-loop ( TermList Int -- Int )
+  swap dup tlnil? if
+    drop
+  else
+    tlcdr swap 1 add tllen-loop
+  then
+;
+
+# Reverse term list
+: tlrev ( TermList -- TermList )
+  tlnil tlrev-loop ;
+
+: tlrev-loop ( TermList TermList -- TermList )
+  swap dup tlnil? if
+    drop
+  else
+    dup tlcar swap tlcdr
+    rot rot swap tlcons
+    tlrev-loop
+  then
+;
+
+# Build term list from 1-3 terms (convenience)
+: tl1 ( Term -- TermList )
+  tlnil tlcons ;
+
+: tl2 ( Term Term -- TermList )
+  tlnil tlcons tlcons ;
+
+: tl3 ( Term Term Term -- TermList )
+  tlnil tlcons tlcons tlcons ;
+
+# ============================================
+# Goal List (for clause bodies)
+# ============================================
+
+union GoalList {
+  GNil
+  GCons { goal: Term, rest: GoalList }
+}
+
+: gnull ( -- GoalList )
+  Make-GNil ;
+
+: gcons ( Term GoalList -- GoalList )
+  Make-GCons ;
+
+: gnull? ( GoalList -- Int )
+  variant.tag 0 = ;
+
+: gcar ( GoalList -- Term )
+  0 variant.field-at ;
+
+: gcdr ( GoalList -- GoalList )
+  1 variant.field-at ;
+
+# Length of goal list
+: glen ( GoalList -- Int )
+  0 glen-loop ;
+
+: glen-loop ( GoalList Int -- Int )
+  swap dup gnull? if
+    drop
+  else
+    gcdr swap 1 add glen-loop
+  then
+;
+
+# Append two goal lists
+: gappend ( GoalList GoalList -- GoalList )
+  swap dup gnull? if
+    drop
+  else
+    dup gcar swap gcdr
+    rot gappend gcons
+  then
+;
+
+# Reverse goal list
+: grev ( GoalList -- GoalList )
+  gnull grev-loop ;
+
+: grev-loop ( GoalList GoalList -- GoalList )
+  swap dup gnull? if
+    drop
+  else
+    dup gcar swap gcdr
+    rot rot swap gcons
+    grev-loop
+  then
+;
+
+# ============================================
+# Clauses (Facts and Rules)
+# ============================================
+
+union Clause {
+  Clause { head: Term, body: GoalList }
+}
+
+: make-clause ( Term GoalList -- Clause )
+  Make-Clause ;
+
+# Fact: clause with empty body
+: make-fact ( Term -- Clause )
+  gnull make-clause ;
+
+: clause-head ( Clause -- Term )
+  0 variant.field-at ;
+
+: clause-body ( Clause -- GoalList )
+  1 variant.field-at ;
+
+# Check if clause is a fact (empty body)
+: clause-fact? ( Clause -- Int )
+  clause-body gnull? ;
+
+# ============================================
+# Clause Database
+# ============================================
+
+union ClauseDB {
+  DBEmpty
+  DBCons { clause: Clause, rest: ClauseDB }
+}
+
+: db-empty ( -- ClauseDB )
+  Make-DBEmpty ;
+
+: db-cons ( Clause ClauseDB -- ClauseDB )
+  Make-DBCons ;
+
+: db-empty? ( ClauseDB -- Int )
+  variant.tag 0 = ;
+
+: db-first ( ClauseDB -- Clause )
+  0 variant.field-at ;
+
+: db-rest ( ClauseDB -- ClauseDB )
+  1 variant.field-at ;
+
+# Add clause to end of database (for order preservation)
+: db-append ( Clause ClauseDB -- ClauseDB )
+  dup db-empty? if
+    drop db-empty db-cons
+  else
+    dup db-first
+    swap db-rest
+    rot swap db-append
+    db-cons
+  then
+;
+
+# Count clauses in database
+: db-count ( ClauseDB -- Int )
+  0 db-count-loop ;
+
+: db-count-loop ( ClauseDB Int -- Int )
+  swap dup db-empty? if
+    drop
+  else
+    db-rest swap 1 add db-count-loop
+  then
+;
+
+# ============================================
+# Variable Bindings and Substitution
+# ============================================
+
+union Binding {
+  Bind { var_id: Int, value: Term }
+}
+
+: make-binding ( Int Term -- Binding )
+  Make-Bind ;
+
+: binding-var-id ( Binding -- Int )
+  0 variant.field-at ;
+
+: binding-value ( Binding -- Term )
+  1 variant.field-at ;
+
+union Subst {
+  SubstEmpty
+  SubstExtend { binding: Binding, parent: Subst }
+}
+
+: subst-empty ( -- Subst )
+  Make-SubstEmpty ;
+
+: subst-extend ( Binding Subst -- Subst )
+  Make-SubstExtend ;
+
+: subst-empty? ( Subst -- Int )
+  variant.tag 0 = ;
+
+: subst-binding ( Subst -- Binding )
+  0 variant.field-at ;
+
+: subst-parent ( Subst -- Subst )
+  1 variant.field-at ;
+
+# Add a binding: var_id -> term
+: subst-bind ( Int Term Subst -- Subst )
+  rot rot make-binding swap subst-extend ;
+
+# Lookup variable in substitution
+# Returns: Option<Term> (using 0/1 flag + value on stack)
+: subst-lookup ( Int Subst -- Int Term )
+  dup subst-empty? if
+    drop drop 0 tempty-list  # Not found (dummy term)
+  else
+    dup subst-binding
+    dup binding-var-id
+    3 pick = if
+      binding-value nip nip 1 swap  # Found
+    else
+      drop subst-parent subst-lookup
+    then
+  then
+;
+
+# ============================================
+# Choice Points for Backtracking
+# ============================================
+
+union ChoicePoint {
+  CP { goals: GoalList, clauses: ClauseDB, subst: Subst, var_counter: Int }
+}
+
+: make-cp ( GoalList ClauseDB Subst Int -- ChoicePoint )
+  Make-CP ;
+
+: cp-goals ( ChoicePoint -- GoalList )
+  0 variant.field-at ;
+
+: cp-clauses ( ChoicePoint -- ClauseDB )
+  1 variant.field-at ;
+
+: cp-subst ( ChoicePoint -- Subst )
+  2 variant.field-at ;
+
+: cp-var-counter ( ChoicePoint -- Int )
+  3 variant.field-at ;
+
+union ChoiceStack {
+  CPNil
+  CPCons { cp: ChoicePoint, rest: ChoiceStack }
+}
+
+: cpnil ( -- ChoiceStack )
+  Make-CPNil ;
+
+: cpcons ( ChoicePoint ChoiceStack -- ChoiceStack )
+  Make-CPCons ;
+
+: cpnil? ( ChoiceStack -- Int )
+  variant.tag 0 = ;
+
+: cpcar ( ChoiceStack -- ChoicePoint )
+  0 variant.field-at ;
+
+: cpcdr ( ChoiceStack -- ChoiceStack )
+  1 variant.field-at ;
+
+# ============================================
+# Solve Result
+# ============================================
+
+union SolveResult {
+  SolveSuccess { subst: Subst, cp_stack: ChoiceStack, var_counter: Int }
+  SolveFailure
+  SolveError { message: String, span: SourceSpan }
+}
+
+: make-solve-success ( Subst ChoiceStack Int -- SolveResult )
+  Make-SolveSuccess ;
+
+: make-solve-failure ( -- SolveResult )
+  Make-SolveFailure ;
+
+: make-solve-error ( String SourceSpan -- SolveResult )
+  Make-SolveError ;
+
+: solve-success? ( SolveResult -- Int )
+  variant.tag 0 = ;
+
+: solve-failure? ( SolveResult -- Int )
+  variant.tag 1 = ;
+
+: solve-error? ( SolveResult -- Int )
+  variant.tag 2 = ;
+
+: solve-success-subst ( SolveResult -- Subst )
+  0 variant.field-at ;
+
+: solve-success-cp-stack ( SolveResult -- ChoiceStack )
+  1 variant.field-at ;
+
+: solve-success-var-counter ( SolveResult -- Int )
+  2 variant.field-at ;
+
+: solve-error-message ( SolveResult -- String )
+  0 variant.field-at ;
+
+: solve-error-span ( SolveResult -- SourceSpan )
+  1 variant.field-at ;
+
+# ============================================
+# Unification Result
+# ============================================
+
+union UnifyResult {
+  UnifyOk { subst: Subst }
+  UnifyFail
+}
+
+: make-unify-ok ( Subst -- UnifyResult )
+  Make-UnifyOk ;
+
+: make-unify-fail ( -- UnifyResult )
+  Make-UnifyFail ;
+
+: unify-ok? ( UnifyResult -- Int )
+  variant.tag 0 = ;
+
+: unify-fail? ( UnifyResult -- Int )
+  variant.tag 1 = ;
+
+: unify-ok-subst ( UnifyResult -- Subst )
+  0 variant.field-at ;
+
+# ============================================
+# Parse Result
+# ============================================
+
+union ParseResult {
+  ParseOkTerm { term: Term, remaining: TokenList }
+  ParseOkClause { clause: Clause, remaining: TokenList }
+  ParseOkQuery { goals: GoalList, remaining: TokenList }
+  ParseErr { message: String, span: SourceSpan }
+}
+
+# Forward declare TokenList (defined in tokenizer.seq)
+union TokenList {
+  TNil
+  TCons { token: Token, rest: TokenList }
+}
+
+union Token {
+  Tok { text: String, span: SourceSpan }
+}
+
+: make-parse-ok-term ( Term TokenList -- ParseResult )
+  Make-ParseOkTerm ;
+
+: make-parse-ok-clause ( Clause TokenList -- ParseResult )
+  Make-ParseOkClause ;
+
+: make-parse-ok-query ( GoalList TokenList -- ParseResult )
+  Make-ParseOkQuery ;
+
+: make-parse-err ( String SourceSpan -- ParseResult )
+  Make-ParseErr ;
+
+: parse-ok-term? ( ParseResult -- Int )
+  variant.tag 0 = ;
+
+: parse-ok-clause? ( ParseResult -- Int )
+  variant.tag 1 = ;
+
+: parse-ok-query? ( ParseResult -- Int )
+  variant.tag 2 = ;
+
+: parse-err? ( ParseResult -- Int )
+  variant.tag 3 = ;
+
+: parse-term-value ( ParseResult -- Term )
+  0 variant.field-at ;
+
+: parse-term-remaining ( ParseResult -- TokenList )
+  1 variant.field-at ;
+
+: parse-clause-value ( ParseResult -- Clause )
+  0 variant.field-at ;
+
+: parse-clause-remaining ( ParseResult -- TokenList )
+  1 variant.field-at ;
+
+: parse-query-goals ( ParseResult -- GoalList )
+  0 variant.field-at ;
+
+: parse-query-remaining ( ParseResult -- TokenList )
+  1 variant.field-at ;
+
+: parse-err-message ( ParseResult -- String )
+  0 variant.field-at ;
+
+: parse-err-span ( ParseResult -- SourceSpan )
+  1 variant.field-at ;
+
+# ============================================
+# Arithmetic Evaluation Result
+# ============================================
+
+union ArithResult {
+  ArithInt { value: Int }
+  ArithFloat { value: Float }
+  ArithErr { message: String }
+}
+
+: make-arith-int ( Int -- ArithResult )
+  Make-ArithInt ;
+
+: make-arith-float ( Float -- ArithResult )
+  Make-ArithFloat ;
+
+: make-arith-err ( String -- ArithResult )
+  Make-ArithErr ;
+
+: arith-int? ( ArithResult -- Int )
+  variant.tag 0 = ;
+
+: arith-float? ( ArithResult -- Int )
+  variant.tag 1 = ;
+
+: arith-err? ( ArithResult -- Int )
+  variant.tag 2 = ;
+
+: arith-int-value ( ArithResult -- Int )
+  0 variant.field-at ;
+
+: arith-float-value ( ArithResult -- Float )
+  0 variant.field-at ;
+
+: arith-err-message ( ArithResult -- String )
+  0 variant.field-at ;
+
+# ============================================
+# Term Pretty Printing
+# ============================================
+
+: term-to-string ( Term -- String )
+  dup tatom? if
+    tatom-name
+  else
+    dup tvar? if
+      dup tvar-name
+      dup string.empty? if
+        drop "_G" swap tvar-id int->string string.concat
+      else
+        nip
+      then
+    else
+      dup tint? if
+        tint-value int->string
+      else
+        dup tfloat? if
+          tfloat-value float->string
+        else
+          dup tcompound? if
+            dup tcompound-functor
+            "(" string.concat
+            swap tcompound-args termlist-to-string string.concat
+            ")" string.concat
+          else
+            dup tlist? if
+              "[" swap list-contents-to-string string.concat
+              "]" string.concat
+            else
+              drop "<?>"
+            then
+          then
+        then
+      then
+    then
+  then
+;
+
+: termlist-to-string ( TermList -- String )
+  dup tlnil? if
+    drop ""
+  else
+    dup tlcar term-to-string
+    swap tlcdr
+    dup tlnil? if
+      drop
+    else
+      ", " swap termlist-to-string string.concat string.concat
+    then
+  then
+;
+
+# Convert list contents to string (handles [H|T] notation)
+: list-contents-to-string ( Term -- String )
+  dup tempty-list? if
+    drop ""
+  else
+    dup tlist? if
+      dup tlist-head term-to-string
+      swap tlist-tail
+      dup tempty-list? if
+        drop
+      else
+        dup tlist? if
+          ", " swap list-contents-to-string string.concat string.concat
+        else
+          "|" swap term-to-string string.concat string.concat
+        then
+      then
+    else
+      # Non-list tail (improper list)
+      term-to-string
+    then
+  then
+;
+
+: clause-to-string ( Clause -- String )
+  dup clause-head term-to-string
+  swap clause-body
+  dup gnull? if
+    drop "." string.concat
+  else
+    " :- " string.concat
+    swap goals-to-string string.concat
+    "." string.concat
+  then
+;
+
+: goals-to-string ( GoalList -- String )
+  dup gnull? if
+    drop ""
+  else
+    dup gcar term-to-string
+    swap gcdr
+    dup gnull? if
+      drop
+    else
+      ", " swap goals-to-string string.concat string.concat
+    then
+  then
+;
