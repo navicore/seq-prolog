@@ -2,43 +2,12 @@
 #
 # Generates Seq source code from parsed Prolog AST.
 # The generated code links against the runtime library.
+#
+# TODO: Add string escaping for atom/functor names containing
+#       special characters (backslash, double quote).
+#       Currently assumes names are simple identifiers.
 
 include "term"
-
-# ============================================
-# Code Generation State
-# ============================================
-
-# Accumulated generated code lines
-union CodeBuffer {
-  CodeEmpty
-  CodeLine { line: String, rest: CodeBuffer }
-}
-
-: code-empty ( -- CodeBuffer )
-  Make-CodeEmpty ;
-
-: code-append ( CodeBuffer String -- CodeBuffer )
-  swap Make-CodeLine ;
-
-: code-to-string ( CodeBuffer -- String )
-  dup code-empty? if
-    drop ""
-  else
-    dup code-line-text
-    swap code-line-rest code-to-string
-    "\n" string.concat swap string.concat
-  then
-;
-
-: code-empty? ( CodeBuffer -- Bool )
-  variant.tag 0 i.= ;
-
-: code-line-text ( CodeBuffer -- String )
-  0 variant.field-at ;
-
-: code-line-rest ( CodeBuffer -- CodeBuffer )
-  1 variant.field-at ;
 
 # ============================================
 # Term to Seq Code
@@ -159,7 +128,9 @@ union CodeBuffer {
     drop ""
   else
     dup db-first gen-clause
-    "  " swap string.concat " db-cons\n" string.concat
+    # Use swap db-append to preserve clause order
+    # (stack has ClauseDB below, Clause on top; db-append needs Clause below)
+    "  " swap string.concat " swap db-append\n" string.concat
     swap db-rest gen-all-clauses
     string.concat
   then

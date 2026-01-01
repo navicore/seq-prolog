@@ -126,7 +126,7 @@ clean:
 fmt:
     @echo "No formatter yet - contributions welcome!"
 
-# Run Prolog integration tests
+# Run Prolog integration tests (codegen only)
 prolog-test: build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -139,8 +139,49 @@ prolog-test: build
     done
     echo "All Prolog tests passed!"
 
-# Full CI: test + build + prolog-test
-ci: test build prolog-test
+# Run full compiler integration test (compile + link + run)
+compile-test: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Running compiler integration tests..."
+    mkdir -p target/tests
+    temp_seq="src/.seqprolog-temp.seq"
+    trap "rm -f $temp_seq" EXIT
+    failed=0
+    for test in tests/prolog/*.sprolog; do
+        if [ -f "$test" ]; then
+            name=$(basename "$test" .sprolog)
+            echo -n "  $name... "
+            # Generate Seq code
+            if ./target/seqprolog "$test" > "$temp_seq" 2>&1; then
+                # Compile generated Seq code
+                if seqc build "$temp_seq" -o "target/tests/$name" 2>&1; then
+                    # Run the compiled executable
+                    if "./target/tests/$name" > /dev/null 2>&1; then
+                        echo "ok"
+                    else
+                        echo "FAILED (runtime)"
+                        failed=1
+                    fi
+                else
+                    echo "FAILED (seqc compile)"
+                    failed=1
+                fi
+            else
+                echo "FAILED (codegen)"
+                failed=1
+            fi
+        fi
+    done
+    rm -f "$temp_seq"
+    if [ $failed -eq 1 ]; then
+        echo "Some integration tests failed!"
+        exit 1
+    fi
+    echo "All compiler integration tests passed!"
+
+# Full CI: test + build + prolog-test + compile-test
+ci: test build prolog-test compile-test
     @echo "CI passed!"
 
 # Safe eval - for testing expressions with bounded output
