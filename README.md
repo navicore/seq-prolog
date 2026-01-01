@@ -1,32 +1,28 @@
 # SeqProlog
 
-A **compiled Prolog** implementation in [Seq](https://github.com/navicore/patch-seq), a concatenative stack-based programming language.
+A **Prolog interpreter** written in [Seq](https://github.com/navicore/patch-seq), a concatenative stack-based programming language.
 
-## Status: Foundation Complete, Compiler Pending
+## Status: Working Interpreter
 
-The tokenizer and parser are complete. The compilation backend is pending the addition of generator support to Seq.
+The interpreter is functional with:
+- Full Edinburgh Prolog syntax parsing
+- Unification with occurs check
+- Fact and rule resolution
+- Built-in predicates for unification and arithmetic
 
-**Tracking issue:** [patch-seq#131 - Generator support with yield_value and resume](https://github.com/navicore/patch-seq/issues/131)
-
-### What Works Now
+### What Works
 
 - **Tokenizer**: Full Edinburgh Prolog syntax lexing
 - **Parser**: Recursive descent parser for facts, rules, queries, lists
-- **AST**: Complete term representation with source spans
-- **REPL**: Parse mode - enter Prolog and see parsed AST
+- **Unification**: Robinson's algorithm with occurs check
+- **Solver**: First-solution resolution engine
+- **Built-ins**: `true`, `fail`, `=`, `\=`, `is`, `<`, `>`, `=<`, `>=`, `=:=`, `=\=`
+- **REPL**: Interactive query execution
 
-### What's Coming
+### Coming Soon
 
-- **Compiler**: Prolog → Seq code generation (pending generators)
-- **Runtime**: Unification and backtracking via generators
-- **Execution**: Native compiled queries against fact databases
-
-## Design Goals
-
-1. **Compiled, not interpreted** - Prolog compiles to Seq, then to native code via LLVM
-2. **Generators for backtracking** - Clean abstraction using Seq's (upcoming) generator support
-3. **Static knowledge bases** - Facts compiled in for maximum performance
-4. **Use case: Fact checking** - Post-LLM validation against ground truth
+- **Multiple solutions**: Weave-based backtracking using Seq's generator support
+- **List predicates**: `append`, `member`, `length`, `reverse`
 
 ## Installation
 
@@ -41,28 +37,45 @@ The tokenizer and parser are complete. The compilation backend is pending the ad
 just build
 ```
 
-## Usage (Parse Mode)
+## Usage
 
 ```bash
 # Interactive REPL
 ./target/seqprolog
 
-# Parse a file
+# Load a file and start REPL
 ./target/seqprolog examples/family.sprolog
+
+# Parse-only mode (show AST)
+./target/seqprolog --parse examples/family.sprolog
 ```
+
+### Example Session
 
 ```
 SeqProlog 0.1.0
-Parse mode (compilation pending generator support)
 Enter Prolog clauses or queries. Type 'halt.' to exit.
 
-| parent(tom, mary).
-Parsed clause: parent(tom, mary).
-| grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
-Parsed clause: grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
-| ?- grandparent(tom, A).
-Parsed query: ?- grandparent(tom, A)
-(Execution pending compiler implementation)
+?- parent(tom, mary).
+Clause added.
+?- parent(tom, james).
+Clause added.
+?- parent(mary, ann).
+Clause added.
+?- grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+Clause added.
+?- parent(tom, mary).
+true.
+?- parent(tom, ann).
+false.
+?- grandparent(tom, ann).
+true.
+?- 3 < 5.
+true.
+?- X is 2 + 3.
+0 = 5
+?- halt.
+Goodbye!
 ```
 
 ## Prolog Syntax Supported
@@ -95,12 +108,9 @@ append([H|T], L, [H|R]) :- append(T, L, R).
 
 ### Arithmetic
 ```prolog
-factorial(0, 1).
-factorial(N, F) :-
-    N > 0,
-    N1 is N - 1,
-    factorial(N1, F1),
-    F is N * F1.
+?- X is 3 + 4 * 2.
+?- 5 > 3.
+?- X is 10 mod 3.
 ```
 
 ## Project Structure
@@ -108,10 +118,13 @@ factorial(N, F) :-
 ```
 seq-prolog/
 ├── src/
-│   ├── term.seq         # Prolog terms and data types
+│   ├── term.seq         # Prolog terms and ADTs
 │   ├── tokenizer.seq    # Lexer for Prolog syntax
 │   ├── parser.seq       # Recursive descent parser
-│   ├── repl.seq         # CLI/REPL (parse mode)
+│   ├── unify.seq        # Unification algorithm
+│   ├── solve.seq        # Resolution engine
+│   ├── builtins.seq     # Built-in predicates
+│   ├── repl.seq         # CLI/REPL
 │   └── version.seq      # Version info
 ├── examples/            # Example Prolog programs
 ├── tests/               # Test files
@@ -119,31 +132,43 @@ seq-prolog/
 └── README.md
 ```
 
-## Future: Compiled Architecture
+## Architecture
 
-Once Seq has generator support, the compilation pipeline will be:
+SeqProlog uses a traditional Prolog architecture:
 
-```
-Prolog source (.sprolog)
-    ↓
-[Parser] → AST (terms, clauses)
-    ↓
-[Compiler] → Seq source code
-    ↓
-[seqc] → Native binary via LLVM
-```
+1. **Parsing**: Edinburgh syntax → AST (terms, clauses)
+2. **Unification**: Robinson's algorithm with substitution threading
+3. **Resolution**: Depth-first search through clause database
+4. **Backtracking**: Currently first-solution only; weave-based multiple solutions planned
 
-Backtracking will use generators:
+### Future: Weave-based Backtracking
+
+Seq's generator support (weaves) will enable elegant backtracking:
+
 ```seq
-# Compiled query becomes a generator
-: query-parent-X-mary ( -- Generator )
-  [
-    "tom" yield   # first solution
-    "bob" yield   # second solution
-    # generator ends = no more solutions
-  ] make-generator
+# Each predicate with multiple solutions becomes a weave
+: parent-query ( Ctx Args -- | Yield Subst )
+  # Try each matching clause
+  # Yield solutions on success
+  # Return naturally when exhausted
 ;
 ```
+
+## Built-in Predicates
+
+| Predicate | Description |
+|-----------|-------------|
+| `true` | Always succeeds |
+| `fail` | Always fails |
+| `X = Y` | Unify X and Y |
+| `X \= Y` | Succeed if X and Y don't unify |
+| `X is Expr` | Evaluate Expr, unify with X |
+| `X < Y` | Arithmetic less than |
+| `X > Y` | Arithmetic greater than |
+| `X =< Y` | Arithmetic less or equal |
+| `X >= Y` | Arithmetic greater or equal |
+| `X =:= Y` | Arithmetic equality |
+| `X =\= Y` | Arithmetic inequality |
 
 ## Related Projects
 

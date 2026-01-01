@@ -1,0 +1,7 @@
+include "src/term"
+
+: main ( -- )
+  "Testing term creation" io.write-line
+  "foo" no-span tatom
+  term-to-string io.write-line
+;

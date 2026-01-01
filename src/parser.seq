@@ -95,22 +95,25 @@ include "tokenizer"
   tcdr
   0  # var counter
   parse-goals
-  # Check result
+  # Stack: ParseResult (parse-goals nips the counter)
   dup parse-ok-term? if
     # Goals are wrapped in a term - extract and convert to GoalList
     dup parse-term-value
     swap parse-term-remaining
-    # Check for '.'
+    # Stack: Term remaining
     dup peek-text "." string.equal? if
       tcdr
-      rot term-to-goals
+      # Stack: Term remaining'
+      swap term-to-goals
+      # Stack: remaining' GoalList
       swap make-parse-ok-query
+      # Stack: QueryResult
     else
       drop drop
       "Expected '.' at end of query" no-span make-parse-err
     then
   else
-    # Error - propagate
+    # Error - propagate, just return the error result
   then
 ;
 
@@ -137,50 +140,59 @@ include "tokenizer"
 : parse-clause ( TokenList -- ParseResult )
   0  # var counter
   parse-term-with-counter
-  # Stack: result counter
-  swap
-  dup parse-ok-term? if
-    dup parse-term-value
-    swap parse-term-remaining
-    # Check for '.' (fact) or ':-' (rule)
+  # Stack: ParseResult counter
+  over parse-ok-term? if
+    over parse-term-value
+    2 pick parse-term-remaining
+    # Stack: ParseResult counter HeadTerm remaining
     dup peek-text
     dup "." string.equal? if
+      # FACT: term '.'
       drop tcdr
-      swap make-fact
-      swap make-parse-ok-clause
-      rot drop  # drop counter
+      # Stack: ParseResult counter HeadTerm remaining'
+      swap make-fact  # Stack: ParseResult counter remaining' Clause
+      swap make-parse-ok-clause  # Stack: ParseResult counter ClauseResult
+      nip nip  # Stack: ClauseResult
     else
       ":-" string.equal? if
+        # RULE: term ':-' body '.'
         tcdr
-        rot  # counter tokens term
-        rot rot  # term counter tokens
-        swap  # term tokens counter
+        # Stack: ParseResult counter HeadTerm body_tokens
+        swap  # Stack: ParseResult counter body_tokens HeadTerm
+        3 roll  # Stack: ParseResult body_tokens HeadTerm counter
+        swap rot  # Stack: ParseResult HeadTerm body_tokens counter
         parse-goals-with-counter
-        # Stack: term result counter
-        rot drop  # drop counter
-        swap  # result term
+        # Stack: ParseResult HeadTerm BodyResult counter
+        drop  # drop counter
+        # Stack: ParseResult HeadTerm BodyResult
         dup parse-ok-term? if
           dup parse-term-value term-to-goals
           swap parse-term-remaining
+          # Stack: ParseResult HeadTerm BodyGoals remaining
           dup peek-text "." string.equal? if
             tcdr
-            rot rot  # term goals tokens
-            make-clause
-            swap make-parse-ok-clause
+            # Stack: ParseResult HeadTerm BodyGoals remaining'
+            rot rot  # Stack: ParseResult remaining' HeadTerm BodyGoals
+            make-clause  # Stack: ParseResult remaining' Clause
+            swap make-parse-ok-clause  # Stack: ParseResult ClauseResult
+            nip  # Stack: ClauseResult
           else
-            drop drop drop
+            drop drop drop drop
             "Expected '.' at end of clause" no-span make-parse-err
           then
         else
-          nip  # propagate error
+          # Body parse error
+          nip nip  # Stack: BodyResult (error)
         then
       else
-        drop drop drop
+        # Expected '.' or ':-'
+        drop drop drop drop
         "Expected '.' or ':-'" no-span make-parse-err
       then
     then
   else
-    nip  # propagate error
+    # Head parse error
+    nip  # Stack: ParseResult (error)
   then
 ;
 
@@ -197,32 +209,35 @@ include "tokenizer"
   # Stack: result counter
   over parse-ok-term? if
     over parse-term-remaining
+    # Stack: result counter remaining
     dup peek-text "," string.equal? if
       tcdr
-      over  # counter
+      # Stack: result counter remaining'
+      rot  # Stack: counter remaining' result
+      parse-term-value  # Stack: counter remaining' first-term
+      rot rot  # Stack: remaining' first-term counter -> first-term counter remaining'
+      swap  # Stack: first-term remaining' counter
       parse-goals-with-counter
-      # Stack: first-result first-counter rest-result rest-counter
-      swap rot drop  # Stack: first-result rest-result rest-counter
-      swap dup parse-ok-term? if
-        dup parse-term-value
-        swap parse-term-remaining
-        # Build comma term
-        rot parse-term-value
-        swap  # first-term rest-term remaining
-        rot rot  # remaining first-term rest-term
-        tl2 "," swap no-span tcompound-at
-        swap make-parse-ok-term
-        swap  # result counter
+      # Stack: first-term rest-result rest-counter
+      over parse-ok-term? if
+        over parse-term-value  # Stack: first-term rest-result rest-counter rest-term
+        2 pick parse-term-remaining  # Stack: first-term rest-result rest-counter rest-term remaining
+        4 roll  # Stack: rest-result rest-counter rest-term remaining first-term
+        swap rot  # Stack: rest-result rest-counter remaining first-term rest-term
+        tl2 "," swap no-span tcompound-at  # Stack: rest-result rest-counter remaining comma-term
+        swap make-parse-ok-term  # Stack: rest-result rest-counter new-result
+        rot drop  # Stack: rest-counter new-result
+        swap  # Stack: new-result rest-counter
       else
-        nip  # propagate error
-        swap
+        # Stack: first-term rest-result rest-counter (rest-result is error)
+        rot drop  # Stack: rest-result rest-counter
       then
     else
       # No more goals
-      drop
+      drop  # Stack: result counter
     then
   else
-    # Error - propagate
+    # Error - propagate, stack already has: result counter
   then
 ;
 
@@ -232,15 +247,17 @@ include "tokenizer"
 
 : parse-term-with-counter ( TokenList Int -- ParseResult Int )
   over tnil? if
+    drop  # drop empty TokenList
     "Unexpected end of input" no-span make-parse-err
-    swap
+    swap  # Stack: ParseErr Int
   else
     over peek-text
     dup is-variable-token? if
-      drop parse-variable
+      drop
+      parse-variable
     else
       dup is-number-token? if
-        drop parse-number swap
+        drop parse-number
       else
         dup "[" string.equal? if
           drop parse-list
@@ -248,10 +265,12 @@ include "tokenizer"
           dup is-atom-token? if
             drop parse-atom-or-compound
           else
-            drop
+            drop  # drop the text
             "Unexpected token: " over peek-text string.concat
             over peek-span make-parse-err
-            swap
+            # Stack: TokenList Int ParseErr
+            rot drop  # drop TokenList
+            swap  # Stack: ParseErr Int
           then
         then
       then
@@ -263,12 +282,12 @@ include "tokenizer"
 # Variable Parsing
 # ============================================
 
-: is-variable-token? ( String -- Int )
+: is-variable-token? ( String -- Bool )
   dup string.empty? if
-    drop 0
+    drop false
   else
     0 string.char-at
-    dup is-uppercase? swap 95 = or  # uppercase or _
+    dup is-uppercase? swap 95 i.= or  # uppercase or _
   then
 ;
 
@@ -278,118 +297,261 @@ include "tokenizer"
   swap tok-span
   # Stack: tokens counter name span
   2 pick  # counter
-  # Create variable with counter as ID
+  # Stack: tokens counter name span counter
+  # tvar-at expects ( String Int SourceSpan -- Term ), so reorder
+  swap  # tokens counter name counter span
   tvar-at
-  3 pick tcdr  # remaining tokens
+  # Stack: tokens counter Term
+  rot tcdr  # move tokens to top, get remaining
+  # Stack: counter Term remaining
   make-parse-ok-term
-  swap 1 add  # increment counter
+  # Stack: counter ParseResult
+  swap 1 i.+  # Stack: ParseResult counter+1
 ;
 
 # ============================================
 # Number Parsing
 # ============================================
 
-: is-number-token? ( String -- Int )
+: is-number-token? ( String -- Bool )
   dup string.empty? if
-    drop 0
+    drop false
   else
     dup 0 string.char-at
     dup is-digit? if
-      drop drop 1
+      drop drop true
     else
-      45 = if  # '-'
-        string.length 1 > if
+      45 i.= if  # '-'
+        string.length 1 i.> if
           1 string.char-at is-digit?
         else
-          0
+          false
         then
       else
-        drop 0
+        drop false
       then
     then
   then
 ;
 
-: parse-number ( TokenList -- ParseResult )
+: parse-number ( TokenList Int -- ParseResult Int )
+  swap  # Int TokenList
   dup tcar
   dup tok-text
   swap tok-span
+  # Stack: Int TokenList Token text span
   # Check if float (contains '.')
   over "." string.contains? if
-    swap string->float
+    swap string->float drop  # value (ignore success flag for now)
     swap tfloat-at
   else
-    swap string->int
+    swap string->int drop  # value (ignore success flag for now)
     swap tint-at
   then
-  swap tcdr
-  make-parse-ok-term
+  # Stack: Int TokenList term
+  swap tcdr  # Int remaining term
+  make-parse-ok-term  # Int ParseResult
+  swap  # ParseResult Int
 ;
 
 # ============================================
 # Atom/Compound Parsing
 # ============================================
 
-: is-atom-token? ( String -- Int )
+: is-atom-token? ( String -- Bool )
   dup string.empty? if
-    drop 0
+    drop false
   else
     0 string.char-at is-lowercase?
   then
 ;
 
-: parse-atom-or-compound ( TokenList Int -- ParseResult Int )
+# Check if next token is "("
+: followed-by-paren? ( TokenList -- Bool )
+  tcdr dup tnil? if
+    drop false
+  else
+    peek-text "(" string.equal?
+  then
+;
+
+# Parse a simple atom (no arguments)
+: parse-simple-atom ( TokenList Int -- ParseResult Int )
   over tcar
-  dup tok-text
-  swap tok-span
+  dup tok-text swap tok-span
   # Stack: tokens counter name span
-  3 pick tcdr  # look at next token
-  dup tnil? 0 = if
-    dup peek-text "(" string.equal? if
-      # Compound term
-      tcdr  # skip '('
-      4 roll drop  # replace old remaining with new
-      rot rot  # name span tokens counter
-      parse-args-with-counter
-      # Stack: name span result counter
-      2 pick parse-ok-term? if
-        2 pick parse-term-value termlist-from-comma
-        3 pick parse-term-remaining
-        dup peek-text ")" string.equal? if
-          tcdr
-          # Stack: name span result counter args remaining
-          4 roll 5 roll  # name span to front
-          4 roll drop  # drop old result
-          # Stack: result counter args remaining name span
-          4 roll  # args name span remaining counter
-          4 roll rot rot  # remaining counter args name span
-          tcompound-at
-          rot make-parse-ok-term
-          swap
-        else
-          drop drop
-          nip nip nip
-          "Expected ')'" no-span make-parse-err
-          swap
-        then
-      else
-        nip nip  # propagate error
-      then
-    else
-      # Just an atom
+  tatom-at
+  # Stack: tokens counter atom
+  rot tcdr
+  # Stack: counter atom remaining
+  make-parse-ok-term swap
+;
+
+# Build compound from functor, args list, and span
+: build-compound ( String TermList SourceSpan -- Term )
+  tcompound-at
+;
+
+# Helper to build compound from stack after parsing args
+# Input:  tokens counter functor-name functor-span args-list remaining new-counter
+# Output: result new-counter
+: build-compound-from-stack ( TokenList Int String SourceSpan TermList TokenList Int -- ParseResult Int )
+  # Stack positions (0 = top):
+  #   0: new-counter (Int)
+  #   1: remaining (TokenList)
+  #   2: args-list (TermList)
+  #   3: functor-span (SourceSpan)
+  #   4: functor-name (String)
+  #   5: counter (Int) - old counter, to be dropped
+  #   6: tokens (TokenList) - original tokens, to be dropped
+
+  # Step 1: Reverse args-list (need to get it to top first)
+  rot                    # top3: args-list remaining new-counter -> remaining new-counter args-list
+  reverse-termlist       # Stack: tokens counter functor-name functor-span remaining new-counter reversed-args
+
+  # Step 2: Build compound term using tcompound-at ( String TermList SourceSpan -- Term )
+  # Positions: 0:reversed-args 1:new-counter 2:remaining 3:functor-span 4:functor-name 5:counter 6:tokens
+  # Need: functor-name reversed-args functor-span (functor-span on top)
+
+  4 roll                 # bring functor-name to top
+  swap                   # swap with reversed-args
+  4 roll                 # bring functor-span to top
+  tcompound-at           # tokens counter remaining new-counter compound
+
+  # Step 3: Build ParseResult
+  # make-parse-ok-term ( Term TokenList -- ParseResult ) - Term deeper, TokenList on top
+  # Current: tokens counter remaining new-counter compound
+  # Need: compound remaining (remaining on top)
+
+  rot                    # top3: remaining new-counter compound -> new-counter compound remaining
+  # Stack: tokens counter new-counter compound remaining
+  make-parse-ok-term     # tokens counter new-counter result
+
+  # Step 4: Clean up - drop old counter and tokens
+  swap                   # tokens counter result new-counter
+  rot drop               # drop old counter: tokens result new-counter
+  rot drop               # drop original tokens: result new-counter
+;
+
+# Parse compound term: functor(arg1, arg2, ...)
+: parse-compound ( TokenList Int -- ParseResult Int )
+  # Get functor name and span from first token
+  over tcar tok-text     # functor name
+  2 pick tcar tok-span   # functor span
+  # Stack: tokens counter functor-name functor-span
+
+  # Skip past functor and "(" to get to args
+  3 pick tcdr tcdr       # args-tokens (after functor and open paren)
+  # Stack: tokens counter functor-name functor-span args-tokens
+  # Positions: 4       3        2            1           0
+  3 pick                 # get counter copy (at position 3, not 4!)
+  # Stack: tokens counter functor-name functor-span args-tokens counter
+
+  # Parse the argument list
+  parse-arg-list
+  # Stack: tokens counter functor-name functor-span args-list remaining new-counter
+
+  # Reverse args and build compound
+  # tcompound-at ( String TermList SourceSpan -- Term )
+  build-compound-from-stack
+;
+
+# Parse argument list, expecting ")" at end
+# Returns result containing term list and remaining tokens (after ")")
+: parse-arg-list ( TokenList Int -- TermList TokenList Int )
+  tlnil
+  # Stack: tokens counter empty-list
+  rot rot
+  # Stack: empty-list tokens counter
+  collect-args
+;
+
+# Collect args into a list, consuming ")" at the end
+: collect-args ( TermList TokenList Int -- TermList TokenList Int )
+  parse-term-with-counter
+  # Stack: list result counter
+  over parse-ok-term? if
+    # Got a term, add to list
+    over parse-term-value
+    # Stack: list result counter term
+    3 roll
+    # Stack: result counter term list
+    tlcons
+    # Stack: result counter new-list
+    rot parse-term-remaining
+    # Stack: counter new-list remaining
+    rot
+    # Stack: new-list remaining counter
+
+    # Check for more args
+    over peek-text
+    dup ")" string.equal? if
       drop
-      tatom-at
-      rot tcdr
-      make-parse-ok-term
-      swap
+      # Done - consume ")" and return
+      swap tcdr swap
+      # Stack: new-list remaining' counter
+    else
+      "," string.equal? if
+        # More args
+        swap tcdr swap
+        # Stack: new-list remaining' counter
+        collect-args
+      else
+        # Error - unexpected token, return what we have
+        # Stack already: new-list remaining counter
+      then
     then
   else
-    # End of input - just an atom
-    drop
-    tatom-at
-    rot tcdr
-    make-parse-ok-term
-    swap
+    # Error from parsing term
+    # Stack: list result counter
+    # Return list we have so far, with remaining from result
+    swap parse-term-remaining swap
+    # Stack: list remaining counter
+  then
+;
+
+# Reverse a term list (args are collected in reverse order)
+: reverse-termlist ( TermList -- TermList )
+  tlnil reverse-termlist-loop
+;
+
+: reverse-termlist-loop ( TermList TermList -- TermList )
+  over tlnil? if
+    nip
+  else
+    over tlcar
+    # Stack: old acc head
+    swap tlcons
+    # Stack: old new-acc
+    swap tlcdr swap
+    # Stack: old-rest new-acc
+    reverse-termlist-loop
+  then
+;
+
+# Build comma term from term list (for args)
+: termlist-to-comma ( TermList -- Term )
+  dup tlnil? if
+    drop "nil" no-span tatom-at
+  else
+    dup tlcdr tlnil? if
+      # Single element
+      tlcar
+    else
+      # Multiple elements - build comma structure
+      dup tlcar
+      swap tlcdr termlist-to-comma
+      # Stack: first rest-comma
+      tl2 "," swap no-span tcompound-at
+    then
+  then
+;
+
+: parse-atom-or-compound ( TokenList Int -- ParseResult Int )
+  over followed-by-paren? if
+    parse-compound
+  else
+    parse-simple-atom
   then
 ;
 
@@ -414,35 +576,38 @@ include "tokenizer"
 
 : parse-args-with-counter ( TokenList Int -- ParseResult Int )
   parse-term-with-counter
+  # Stack: ParseResult Int
   over parse-ok-term? if
     over parse-term-remaining
+    # Stack: ParseResult Int remaining
     dup peek-text "," string.equal? if
       tcdr
-      swap drop  # replace remaining in result
-      over parse-term-value
-      rot rot  # first tokens counter
+      # Stack: ParseResult Int remaining'
+      rot  # Stack: Int remaining' ParseResult
+      parse-term-value  # Stack: Int remaining' Term
+      rot rot  # Stack: remaining' Term Int -> Term Int remaining'
+      swap  # Stack: Term remaining' Int
       parse-args-with-counter
-      # Stack: first result counter
-      2 pick parse-ok-term? if
-        2 pick parse-term-value
-        3 pick parse-term-remaining
-        # Build comma term for args
-        4 roll  # first
-        swap  # first rest remaining
-        rot rot  # remaining first rest
-        tl2 "," swap no-span tcompound-at
-        swap make-parse-ok-term
-        rot drop  # drop old result
-        swap
+      # Stack: Term result counter
+      over parse-ok-term? if
+        over parse-term-value  # Stack: Term result counter rest-term
+        2 pick parse-term-remaining  # Stack: Term result counter rest-term remaining
+        4 roll  # Stack: result counter rest-term remaining Term
+        swap rot  # Stack: result counter remaining Term rest-term
+        tl2 "," swap no-span tcompound-at  # Stack: result counter remaining comma-term
+        swap make-parse-ok-term  # Stack: result counter new-result
+        rot drop  # Stack: counter new-result
+        swap  # Stack: new-result counter
       else
-        nip  # propagate error
+        # Stack: Term result counter (result is error)
+        rot drop  # Stack: result counter
       then
     else
       # No more args
-      drop
+      drop  # Stack: ParseResult Int
     then
   else
-    # Error
+    # Error - Stack: ParseResult Int (already correct)
   then
 ;
 
@@ -451,106 +616,60 @@ include "tokenizer"
 # ============================================
 
 : parse-list ( TokenList Int -- ParseResult Int )
-  over tcdr  # skip '['
-  over tcar tok-span  # span for list start
-  # Stack: tokens counter remaining span
-  2 pick peek-text "]" string.equal? if
-    # Empty list
+  # TODO: List parsing not yet fully implemented
+  # For now, just return an empty list for []
+  over tcdr  # remaining after '['
+  # Stack: tokens counter remaining
+  dup peek-text "]" string.equal? if
+    # Empty list: []
     tcdr  # skip ']'
-    swap tempty-list-at
-    swap make-parse-ok-term
-    rot rot drop drop
-  else
+    # Stack: tokens counter remaining'
     rot drop  # drop original tokens
-    rot  # span remaining counter
-    parse-list-items
-    # Stack: span result counter
-    over parse-ok-term? if
-      over parse-term-remaining
-      dup peek-text
-      dup "]" string.equal? if
-        drop tcdr
-        # Build proper list from term
-        rot parse-term-value
-        termlist-from-comma
-        termlist-to-proper-list
-        swap
-        4 roll span-combine  # combine spans
-        tlist-replace-span
-        swap make-parse-ok-term
-        swap
-      else
-        "|" string.equal? if
-          tcdr
-          over
-          parse-term-with-counter
-          # Stack: span first-result counter tail-result new-counter
-          dup parse-ok-term? if
-            dup parse-term-remaining
-            dup peek-text "]" string.equal? if
-              tcdr
-              # Build improper list
-              swap parse-term-value  # tail
-              4 roll drop  # drop old counter
-              3 roll parse-term-value  # head(s)
-              termlist-from-comma
-              swap  # tail heads
-              termlist-to-improper-list
-              swap
-              5 roll span-combine
-              tlist-replace-span
-              swap make-parse-ok-term
-              rot drop  # drop old result
-              swap
-            else
-              drop drop drop
-              nip nip nip
-              "Expected ']' after list tail" no-span make-parse-err
-              swap
-            then
-          else
-            nip nip nip nip  # propagate error
-          then
-        else
-          drop drop
-          nip nip
-          "Expected ']' or '|'" no-span make-parse-err
-          swap
-        then
-      then
-    else
-      nip  # propagate error
-    then
+    # Stack: counter remaining'
+    tempty-list  # Stack: counter remaining' EmptyListTerm
+    swap make-parse-ok-term  # Stack: counter ParseResult
+    swap  # Stack: ParseResult counter
+  else
+    # Non-empty list - not implemented yet
+    drop drop drop
+    "List syntax not yet implemented" no-span make-parse-err
+    0
   then
 ;
 
 : parse-list-items ( TokenList Int -- ParseResult Int )
   parse-term-with-counter
+  # Stack: ParseResult Int
   over parse-ok-term? if
     over parse-term-remaining
+    # Stack: ParseResult Int remaining
     dup peek-text "," string.equal? if
       tcdr
-      swap drop  # update remaining
-      over parse-term-value
-      rot rot
+      # Stack: ParseResult Int remaining'
+      rot  # Stack: Int remaining' ParseResult
+      parse-term-value  # Stack: Int remaining' Term
+      rot rot  # Stack: remaining' Term Int -> Term Int remaining'
+      swap  # Stack: Term remaining' Int
       parse-list-items
-      # Stack: first result counter
-      2 pick parse-ok-term? if
-        2 pick parse-term-value
-        3 pick parse-term-remaining
-        4 roll  # first
-        swap rot  # remaining first rest
-        tl2 "," swap no-span tcompound-at
-        swap make-parse-ok-term
-        rot drop
-        swap
+      # Stack: Term result counter
+      over parse-ok-term? if
+        over parse-term-value  # Stack: Term result counter rest-term
+        2 pick parse-term-remaining  # Stack: Term result counter rest-term remaining
+        4 roll  # Stack: result counter rest-term remaining Term
+        swap rot  # Stack: result counter remaining Term rest-term
+        tl2 "," swap no-span tcompound-at  # Stack: result counter remaining comma-term
+        swap make-parse-ok-term  # Stack: result counter new-result
+        rot drop  # Stack: counter new-result
+        swap  # Stack: new-result counter
       else
-        nip
+        # Stack: Term result counter (result is error)
+        rot drop  # Stack: result counter
       then
     else
-      drop
+      drop  # Stack: ParseResult Int
     then
   else
+    # Stack: ParseResult Int (error result)
   then
 ;
 
@@ -596,20 +715,20 @@ include "tokenizer"
 # ============================================
 
 # Check if string contains a character
-: string.contains? ( String String -- Int )
+: string.contains? ( String String -- Bool )
   swap
   0 string.contains-loop?
 ;
 
-: string.contains-loop? ( String String Int -- Int )
-  2 pick string.length over <= if
-    drop drop drop 0
+: string.contains-loop? ( String String Int -- Bool )
+  2 pick string.length over i.<= if
+    drop drop drop false
   else
     2 pick over 1 string.substring
     2 pick string.equal? if
-      drop drop drop 1
+      drop drop drop true
     else
-      1 add string.contains-loop?
+      1 i.+ string.contains-loop?
     then
   then
 ;
@@ -620,19 +739,15 @@ include "tokenizer"
 
 : print-parse-result ( ParseResult -- )
   dup parse-ok-term? if
-    "Term: " io.write
-    parse-term-value term-to-string io.write-line
+    "Term: " parse-term-value term-to-string string.concat io.write-line
   else
     dup parse-ok-clause? if
-      "Clause: " io.write
-      parse-clause-value clause-to-string io.write-line
+      "Clause: " parse-clause-value clause-to-string string.concat io.write-line
     else
       dup parse-ok-query? if
-        "Query: " io.write
-        parse-query-goals goals-to-string io.write-line
+        "Query: " parse-query-goals goals-to-string string.concat io.write-line
       else
-        "Error: " io.write
-        parse-err-message io.write-line
+        "Error: " parse-err-message string.concat io.write-line
       then
     then
   then

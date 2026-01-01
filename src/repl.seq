@@ -1,9 +1,12 @@
 # REPL/CLI for SeqProlog
 #
-# Currently: Parses Prolog and displays AST (foundation for compiler)
-# Future: Will compile Prolog to Seq and execute
+# Interactive Prolog interpreter with:
+# - Clause database management
+# - Query execution
+# - File loading
 
 include "parser"
+include "solve"
 include "version"
 
 # ============================================
@@ -11,7 +14,7 @@ include "version"
 # ============================================
 
 : main ( -- )
-  args.count 1 > if
+  args.count 1 i.> if
     1 args.at
     dup "--version" string.equal? if
       drop print-version
@@ -21,19 +24,19 @@ include "version"
       else
         dup "--parse" string.equal? if
           drop
-          args.count 2 > if
-            2 args.at parse-file
+          args.count 2 i.> if
+            2 args.at parse-file-only
           else
             "Error: --parse requires a filename" io.write-line
           then
         else
-          # Default: parse and show AST (placeholder for future compilation)
-          parse-file
+          # Load file and run REPL
+          load-file-and-repl
         then
       then
     then
   else
-    run-repl
+    db-empty run-repl
   then
 ;
 
@@ -55,187 +58,380 @@ include "version"
   "Options:" io.write-line
   "  --version    Show version" io.write-line
   "  --help       Show this help" io.write-line
-  "  --parse FILE Parse and display AST" io.write-line
+  "  --parse FILE Parse and display AST only" io.write-line
   "" io.write-line
-  "Note: Compilation backend pending generator support in Seq." io.write-line
-  "      See: https://github.com/navicore/patch-seq/issues/131" io.write-line
+  "Interactive commands:" io.write-line
+  "  halt.        Exit the REPL" io.write-line
+  "  ?- query.    Execute a query" io.write-line
+  "  fact.        Add a fact to the database" io.write-line
+  "  head :- body. Add a rule to the database" io.write-line
 ;
 
 # ============================================
-# File Parsing (AST Display)
+# File Loading
 # ============================================
 
-: parse-file ( String -- )
-  dup file.read-to-string
-  dup "" string.equal? if
-    drop "Error: Could not read file: " swap string.concat io.write-line
+: load-file-and-repl ( String -- )
+  file.slurp
+  # Stack: content success
+  if
+    # Success: content is on stack
+    db-empty swap load-clauses-from-string
+    # Stack: db
+    "File loaded." io.write-line
+    run-repl
   else
-    nip
-    "Parsing: " io.write
-    "" io.write-line
+    drop "Error: Could not read file" io.write-line
+  then
+;
+
+# Load clauses from string into database
+: load-clauses-from-string ( ClauseDB String -- ClauseDB )
+  tokenize
+  0 load-clauses-loop
+;
+
+: load-clauses-loop ( ClauseDB TokenList Int -- ClauseDB )
+  over tnil? if
+    drop drop  # drop tokens, counter; keep db
+  else
+    parse-clause-from-tokens
+    # Stack: db ParseResult remaining counter
+    # Rearrange: we need db, result for checking, then remaining/counter for recursion
+    rot  # Stack: db remaining counter ParseResult
+    dup parse-ok-clause? if
+      # Stack: db remaining counter ParseResult
+      parse-clause-value  # Stack: db remaining counter Clause
+      4 roll  # Stack: remaining counter Clause db
+      db-append  # db-append ( Clause ClauseDB -- ClauseDB ): Clause at depth 1, db at depth 0. Result: remaining counter db'
+      rot rot  # Stack: db' remaining counter
+      load-clauses-loop
+    else
+      dup parse-ok-query? if
+        # Skip queries in file for now
+        # Stack: db remaining counter ParseResult
+        drop  # Stack: db remaining counter
+        # load-clauses-loop expects: ClauseDB TokenList Int = db remaining counter
+        load-clauses-loop
+      else
+        dup parse-err? if
+          # Stack: db remaining counter ParseResult
+          "Load error: " swap parse-err-message string.concat io.write-line
+          # Stack: db remaining counter
+          drop drop  # Stack: db
+        else
+          # Stack: db remaining counter ParseResult
+          drop  # Stack: db remaining counter
+          load-clauses-loop
+        then
+      then
+    then
+  then
+;
+
+# ============================================
+# Parse-only Mode
+# ============================================
+
+: parse-file-only ( String -- )
+  file.slurp
+  # Stack: content success
+  if
     parse-and-display
+  else
+    drop "Error: Could not read file" io.write-line
   then
 ;
 
 : parse-and-display ( String -- )
   tokenize
-  "Tokens:" io.write-line
-  dup print-tokens-with-pos
-  "" io.write-line
-
   "Parsing clauses..." io.write-line
-  parse-clauses-display
+  0 parse-display-loop
+  drop
+  "" io.write-line
+  "Parse complete." io.write-line
 ;
 
-: parse-clauses-display ( TokenList -- )
-  dup tnil? if
-    drop
-    "" io.write-line
-    "Parse complete." io.write-line
+: parse-display-loop ( TokenList Int -- Int )
+  over tnil? if
+    nip  # Stack: Int
   else
-    0 parse-clause-from-tokens-simple
-    # Stack: result remaining
-    swap
+    parse-clause-from-tokens
+    # Stack: ParseResult remaining counter
+    rot  # Stack: remaining counter ParseResult
     dup parse-ok-clause? if
-      "Clause: " io.write
-      parse-clause-value clause-to-string io.write-line
+      parse-clause-value clause-to-string
+      "Clause: " swap string.concat io.write-line
+      # Stack: remaining counter
     else
       dup parse-ok-query? if
-        "Query: ?- " io.write
-        parse-query-goals goals-to-string io.write-line
+        parse-query-goals goals-to-string
+        "Query: ?- " swap string.concat io.write-line
+        # Stack: remaining counter
       else
         dup parse-err? if
-          "Parse error: " io.write
-          parse-err-message io.write-line
+          parse-err-message
+          "Parse error: " swap string.concat io.write-line
+          # Stack: remaining counter
         else
-          drop
+          drop  # Drop unknown result type
+          # Stack: remaining counter
         then
       then
     then
-    parse-clauses-display
+    # Stack: remaining counter
+    parse-display-loop
   then
 ;
 
-# Simplified clause parsing for display (reusing parser internals)
-: parse-clause-from-tokens-simple ( TokenList Int -- ParseResult TokenList )
+# ============================================
+# Clause Parsing Helper
+# ============================================
+
+: parse-clause-from-tokens ( TokenList Int -- ParseResult TokenList Int )
   over tnil? if
     "End of input" no-span make-parse-err
-    swap
+    rot rot
   else
     over peek-text "?-" string.equal? if
-      # Query
-      swap tcdr swap  # skip ?-
-      parse-goals
-      over parse-ok-term? if
-        over parse-term-remaining
-        dup peek-text "." string.equal? if
-          tcdr
-          rot parse-term-value term-to-goals
-          swap make-parse-ok-query
-          swap
-        else
-          drop
-          "Expected '.' after query" no-span make-parse-err
-          nip swap
-        then
-      else
-        swap
-      then
+      parse-query-tokens
     else
-      # Clause
-      parse-term-with-counter
-      # Stack: result counter
-      swap
-      dup parse-ok-term? if
-        dup parse-term-remaining
-        dup peek-text "." string.equal? if
-          tcdr
-          swap parse-term-value make-fact
-          swap make-parse-ok-clause
-          rot drop  # drop counter
-          swap
-        else
-          dup peek-text ":-" string.equal? if
-            tcdr
-            # Stack: result remaining counter
-            swap rot  # counter result remaining
-            rot drop  # drop old result
-            swap  # remaining counter
-            parse-goals
-            # Stack: remaining goals-result counter
-            rot drop  # drop counter
-            over parse-ok-term? if
-              over parse-term-remaining
-              dup peek-text "." string.equal? if
-                tcdr
-                # Stack: remaining goals-result new-remaining
-                nip
-                swap parse-term-value term-to-goals
-                gnull make-clause  # placeholder head - need to fix
-                swap make-parse-ok-clause
-                swap
-              else
-                drop
-                "Expected '.' after clause body" no-span make-parse-err
-                nip swap
-              then
-            else
-              swap
-            then
-          else
-            drop drop
-            "Expected '.' or ':-'" no-span make-parse-err
-            swap drop swap
-          then
-        then
-      else
-        rot drop swap
-      then
+      parse-fact-or-rule-tokens
     then
   then
 ;
 
+: parse-query-tokens ( TokenList Int -- ParseResult TokenList Int )
+  swap tcdr swap  # skip ?-
+  # Stack: tokens_after_qmark counter
+  parse-term-with-counter
+  # Stack: ParseResult counter
+  over parse-ok-term? if
+    over parse-term-remaining  # get remaining tokens from term parse
+    # Stack: ParseResult counter remaining
+    dup peek-text "." string.equal? if
+      tcdr  # skip '.', get final remaining
+      # Stack: ParseResult counter final_remaining
+      rot   # Stack: counter final_remaining ParseResult
+      parse-term-value term-to-goals
+      # Stack: counter final_remaining GoalList
+      swap  # Stack: counter GoalList final_remaining
+      make-parse-ok-query
+      # Stack: counter QueryResult
+      swap  # Stack: QueryResult counter
+      over parse-term-remaining
+      # Stack: QueryResult counter remaining
+      swap  # Stack: QueryResult remaining counter
+    else
+      # No '.', error - remaining is already on stack
+      # Stack: ParseResult counter remaining
+      rot drop  # drop ParseResult; Stack: counter remaining
+      swap      # Stack: remaining counter
+      "Expected '.' after query" no-span make-parse-err
+      # Stack: remaining counter ParseErr
+      rot rot   # Stack: ParseErr remaining counter
+    then
+  else
+    # Parse error - propagate
+    # Stack: ParseResult counter
+    over parse-term-remaining
+    # Stack: ParseResult counter remaining
+    rot   # Stack: counter remaining ParseResult
+    rot   # Stack: remaining ParseResult counter
+    swap  # Stack: remaining counter ParseResult
+    rot rot  # Stack: ParseResult remaining counter
+  then
+;
+
+: parse-fact-or-rule-tokens ( TokenList Int -- ParseResult TokenList Int )
+  parse-term-with-counter
+  # Stack: ParseResult counter
+  over parse-ok-term? if
+    # Successfully parsed head term
+    over parse-term-remaining
+    # Stack: ParseResult counter remaining
+    dup peek-text "." string.equal? if
+      # FACT: term '.'
+      tcdr  # Skip '.', get final remaining
+      # Stack: ParseResult counter final_remaining
+      rot parse-term-value  # Get the term
+      # Stack: counter final_remaining Term
+      make-fact  # Term -> Clause
+      # Stack: counter final_remaining Clause
+      swap  # Stack: counter Clause final_remaining
+      make-parse-ok-clause  # Clause TokenList -> ParseResult
+      # Stack: counter ClauseResult
+      swap  # Stack: ClauseResult counter
+      over parse-term-remaining  # Get remaining from result
+      # Stack: ClauseResult counter remaining
+      swap  # Stack: ClauseResult remaining counter
+    else
+      dup peek-text ":-" string.equal? if
+        # RULE: term ':-' body '.'
+        tcdr  # Skip ':-'
+        # Stack: ParseResult counter body_tokens
+        rot parse-term-value  # Get head term
+        # Stack: counter body_tokens HeadTerm
+        rot rot  # Stack: HeadTerm counter body_tokens
+        swap  # Stack: HeadTerm body_tokens counter
+        parse-term-with-counter
+        # Stack: HeadTerm BodyResult counter
+        over parse-ok-term? if
+          over parse-term-remaining
+          # Stack: HeadTerm BodyResult counter body_remaining
+          dup peek-text "." string.equal? if
+            tcdr  # Skip '.', get final remaining
+            # Stack: HeadTerm BodyResult counter final_remaining
+            rot parse-term-value term-to-goals  # Body goals
+            # Stack: HeadTerm counter final_remaining BodyGoals
+            3 roll  # Stack: counter final_remaining BodyGoals HeadTerm
+            swap  # Stack: counter final_remaining HeadTerm BodyGoals
+            make-clause  # HeadTerm BodyGoals -> Clause
+            # Stack: counter final_remaining Clause
+            swap  # Stack: counter Clause final_remaining
+            make-parse-ok-clause
+            # Stack: counter ClauseResult
+            swap  # Stack: ClauseResult counter
+            over parse-term-remaining
+            swap  # Stack: ClauseResult remaining counter
+          else
+            # Expected '.' after body
+            # Stack: HeadTerm BodyResult counter body_remaining
+            nip nip nip  # Keep only body_remaining
+            "Expected '.' after rule body" no-span make-parse-err
+            swap  # Stack: ParseErr remaining
+            0     # Stack: ParseErr remaining counter
+          then
+        else
+          # Body parse failed
+          # Stack: HeadTerm BodyResult counter
+          nip  # Stack: HeadTerm BodyResult
+          nip  # Stack: BodyResult (the error)
+          dup parse-term-remaining  # Get remaining tokens
+          # Stack: BodyResult remaining
+          0     # Stack: BodyResult remaining counter
+        then
+      else
+        # Expected '.' or ':-'
+        # Stack: ParseResult counter remaining
+        nip nip  # Keep only remaining
+        "Expected '.' or ':-'" no-span make-parse-err
+        swap  # Stack: ParseErr remaining
+        0     # Stack: ParseErr remaining counter
+      then
+    then
+  else
+    # Head parse failed - propagate error
+    # Stack: ParseResult counter
+    over parse-term-remaining  # Get remaining from failed result
+    # Stack: ParseResult counter remaining
+    rot rot  # Stack: remaining ParseResult counter
+    swap rot  # Stack: ParseResult remaining counter
+  then
+;
+
 # ============================================
-# Interactive REPL (Parse Mode)
+# Interactive REPL
 # ============================================
 
-: run-repl ( -- )
+: run-repl ( ClauseDB -- )
   print-version
-  "Parse mode (compilation pending generator support)" io.write-line
   "Enter Prolog clauses or queries. Type 'halt.' to exit." io.write-line
   "" io.write-line
   repl-loop
 ;
 
-: repl-loop ( -- )
-  "| " io.write
+: repl-loop ( ClauseDB -- )
+  # Note: io.read-line returns (String Bool) - string and success flag
   io.read-line
-  dup "" string.equal? if
-    drop
-    "Goodbye!" io.write-line
-  else
-    dup "halt." string.equal? if
-      drop
+  if
+    # Got a line
+    dup "" string.equal? if
+      drop drop
       "Goodbye!" io.write-line
     else
-      # Parse and display
-      tokenize
-      0 parse-clause-from-tokens-simple
-      drop  # drop remaining tokens
-      dup parse-ok-clause? if
-        "Parsed clause: " io.write
-        parse-clause-value clause-to-string io.write-line
+      dup "halt." string.equal? if
+        drop drop
+        "Goodbye!" io.write-line
       else
-        dup parse-ok-query? if
-          "Parsed query: ?- " io.write
-          parse-query-goals goals-to-string io.write-line
-          "(Execution pending compiler implementation)" io.write-line
-        else
-          "Parse error: " io.write
-          parse-err-message io.write-line
-        then
+        process-input
+        repl-loop
       then
-      repl-loop
+    then
+  else
+    # EOF
+    drop drop
+    "Goodbye!" io.write-line
+  then
+;
+
+: process-input ( ClauseDB String -- ClauseDB )
+  tokenize
+  0 parse-clause-from-tokens
+  drop drop  # drop remaining tokens and counter
+  # Stack: db result
+
+  dup parse-ok-clause? if
+    # Add clause to database
+    # Stack: db result
+    parse-clause-value  # Stack: db Clause
+    swap                # Stack: Clause db
+    db-append           # Stack: db'
+    "Clause added." io.write-line
+  else
+    dup parse-ok-query? if
+      # Execute query
+      # Stack: db result
+      parse-query-goals  # Stack: db GoalList
+      dup gnull? if
+      else
+        dup gcar
+        drop
+      then
+      over  # Stack: db GoalList db
+      run-query  # Stack: db SolveResult
+      display-result  # Stack: db
+    else
+      # Stack: db result
+      parse-err-message  # Stack: db message
+      "Parse error: " swap string.concat io.write-line
+      # Stack: db
     then
   then
 ;
+
+# ============================================
+# Result Display
+# ============================================
+
+: display-result ( SolveResult -- )
+  dup solve-success? if
+    solve-success-subst
+    dup subst-empty? if
+      drop "true." io.write-line
+    else
+      display-bindings
+    then
+  else
+    dup solve-failure? if
+      drop "false." io.write-line
+    else
+      "Error: " solve-error-message string.concat io.write-line
+    then
+  then
+;
+
+: display-bindings ( Subst -- )
+  dup subst-empty? if
+    drop
+  else
+    dup subst-binding
+    dup binding-var-id int->string
+    " = " string.concat
+    swap binding-value subst-empty apply-subst term-to-string string.concat
+    io.write-line
+    subst-parent display-bindings
+  then
+;
+
+# term-to-goals is defined in parser.seq

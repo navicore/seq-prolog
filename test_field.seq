@@ -1,0 +1,17 @@
+include "src/term"
+
+: main ( -- )
+  "=== Testing field access ===" io.write-line
+
+  # Create a TVar manually
+  "X" 42 no-span tvar-at
+  "Created TVar" io.write-line
+
+  dup variant.tag "Tag: " swap int->string string.concat io.write-line
+
+  dup 0 variant.field-at "Field 0 (name): " swap string.concat io.write-line
+
+  1 variant.field-at "Field 1 (id): " swap int->string string.concat io.write-line
+
+  "Done" io.write-line
+;

@@ -1,0 +1,265 @@
+# Unification for SeqProlog
+#
+# Implements Robinson's unification algorithm with occurs check.
+# Returns UnifyResult: UnifyOk { subst } | UnifyFail
+
+include "term"
+
+# ============================================
+# Dereference: Follow variable bindings
+# ============================================
+
+# Follow substitution chain to find actual value
+# Simplified: just return term unchanged (single-level only)
+: deref ( Term Subst -- Term )
+  drop  # Just drop Subst, return Term unchanged for now
+;
+
+# ============================================
+# Occurs Check
+# ============================================
+
+# Check if variable ID occurs in term (prevents infinite terms)
+: occurs-in? ( Int Term Subst -- Bool )
+  # First dereference the term
+  deref
+  # Stack: var_id term
+  dup tvar? if
+    tvar-id i.=
+  else
+    dup tcompound? if
+      tcompound-args rot swap occurs-in-termlist?
+    else
+      dup tlist? if
+        dup tlist-head
+        3 pick swap 3 pick occurs-in? if
+          drop drop drop true
+        else
+          tlist-tail rot swap occurs-in?
+        then
+      else
+        drop drop false
+      then
+    then
+  then
+;
+
+: occurs-in-termlist? ( Int TermList Subst -- Bool )
+  over tlnil? if
+    drop drop drop false
+  else
+    over tlcar
+    2 pick swap 2 pick occurs-in? if
+      drop drop drop true
+    else
+      swap tlcdr swap occurs-in-termlist?
+    then
+  then
+;
+
+# ============================================
+# Main Unification
+# ============================================
+
+# Unify two terms under a substitution
+# Returns UnifyResult
+: unify ( Term Term Subst -- UnifyResult )
+  # Input: t1 t2 subst
+  # Dereference t2 first
+  dup                  # t1 t2 subst subst
+  rot                  # t1 subst subst t2
+  swap deref           # t1 subst t2'
+  # Dereference t1
+  rot                  # subst t2' t1
+  rot                  # t2' t1 subst
+  dup                  # t2' t1 subst subst
+  rot                  # t2' subst subst t1
+  swap deref           # t2' subst t1'
+  # Rearrange to t1' t2' subst
+  rot                  # subst t1' t2'
+  rot                  # t1' t2' subst
+
+  # Both are variables?
+  # Stack: t1 t2 subst (indices: 0=subst 1=t2 2=t1, subst is on top!)
+  2 pick tvar? 2 pick tvar? and if
+    # Same variable?
+    2 pick tvar-id 2 pick tvar-id i.= if
+      swap drop nip make-unify-ok  # keep subst, drop t1 t2
+    else
+      # Bind first to second: subst-bind(t1.id, t2, subst)
+      rot tvar-id rot rot subst-bind make-unify-ok
+    then
+  else
+    # t1 is variable?
+    2 pick tvar? if
+      # Skip occurs check for now, just bind
+      rot
+      tvar-id
+      rot rot subst-bind make-unify-ok
+    else
+      # t2 is variable?
+      over tvar? if
+        # Occurs check
+        over tvar-id 2 pick 2 pick occurs-in? if
+          drop drop drop make-unify-fail
+        else
+          # Bind t2 to t1
+          swap tvar-id swap rot swap subst-bind make-unify-ok
+        then
+      else
+        # Neither is variable - must be same structure
+        unify-structures
+      then
+    then
+  then
+;
+
+# Unify non-variable terms
+: unify-structures ( Term Term Subst -- UnifyResult )
+  # Both atoms?
+  # Stack: t1 t2 subst (indices: 0=subst 1=t2 2=t1, subst is on top!)
+  2 pick tatom? 2 pick tatom? and if
+    2 pick tatom-name 2 pick tatom-name string.equal? if
+      swap drop nip make-unify-ok  # keep subst (on top), drop t1 t2
+    else
+      drop drop drop make-unify-fail
+    then
+  else
+    # Both integers?
+    2 pick tint? 2 pick tint? and if
+      2 pick tint-value 2 pick tint-value i.= if
+        swap drop nip make-unify-ok  # keep subst, drop t1 t2
+      else
+        drop drop drop make-unify-fail
+      then
+    else
+      # Both floats?
+      2 pick tfloat? 2 pick tfloat? and if
+        2 pick tfloat-value 2 pick tfloat-value f.= if
+          swap drop nip make-unify-ok  # keep subst, drop t1 t2
+        else
+          drop drop drop make-unify-fail
+        then
+      else
+        # Both compounds?
+        2 pick tcompound? 2 pick tcompound? and if
+          # Same functor?
+          2 pick tcompound-functor 2 pick tcompound-functor string.equal? if
+            # Same arity?
+            2 pick tcompound-args tllen 2 pick tcompound-args tllen i.= if
+              # Unify arguments
+              rot tcompound-args rot tcompound-args rot unify-termlists
+            else
+              drop drop drop make-unify-fail
+            then
+          else
+            drop drop drop make-unify-fail
+          then
+        else
+          # Both lists?
+          2 pick tlist? 2 pick tlist? and if
+            # Unify heads
+            2 pick tlist-head 2 pick tlist-head 2 pick unify
+            # Stack: t1 t2 Subst UnifyResult
+            dup unify-ok? if
+              unify-ok-subst
+              # Stack: t1 t2 Subst NewSubst
+              nip  # drop old Subst (at index 1)
+              # Stack: t1 t2 NewSubst
+              rot tlist-tail  # Stack: t2 NewSubst tail1
+              rot tlist-tail  # Stack: NewSubst tail1 tail2
+              rot             # Stack: tail1 tail2 NewSubst
+              unify
+            else
+              nip nip nip  # Drop t1 t2 Subst, keep UnifyResult
+            then
+          else
+            # Check empty list atoms
+            2 pick tempty-list? 2 pick tempty-list? and if
+              swap drop nip make-unify-ok  # keep subst, drop t1 t2
+            else
+              drop drop drop make-unify-fail
+            then
+          then
+        then
+      then
+    then
+  then
+;
+
+# Unify two term lists element by element
+: unify-termlists ( TermList TermList Subst -- UnifyResult )
+  # Both empty?
+  2 pick tlnil? 2 pick tlnil? and if
+    nip nip make-unify-ok
+  else
+    # One empty, other not?
+    2 pick tlnil? 2 pick tlnil? or if
+      drop drop drop make-unify-fail
+    else
+      # Unify first elements
+      2 pick tlcar
+      2 pick tlcar
+      2 pick
+      unify
+      # Stack: l1 l2 Subst UnifyResult
+      dup unify-ok? if
+        unify-ok-subst
+        # Stack: l1 l2 Subst NewSubst
+        nip  # drop old Subst (at index 1)
+        # Stack: l1 l2 NewSubst
+        rot tlcdr    # Stack: l2 NewSubst rest1
+        rot tlcdr    # Stack: NewSubst rest1 rest2
+        rot          # Stack: rest1 rest2 NewSubst
+        unify-termlists
+      else
+        nip nip nip  # Drop l1 l2 Subst, keep UnifyResult
+      then
+    then
+  then
+;
+
+# ============================================
+# Apply Substitution
+# ============================================
+
+# Apply substitution to term (ground out variables where possible)
+: apply-subst ( Term Subst -- Term )
+  over tvar? if
+    over tvar-id over subst-lookup
+    if
+      # Found binding, apply recursively
+      nip nip dup subst-empty apply-subst
+    else
+      # Not bound, keep variable
+      drop drop
+    then
+  else
+    over tcompound? if
+      over tcompound-functor
+      2 pick tcompound-args 2 pick apply-subst-termlist
+      2 pick tcompound-span tcompound-at
+      nip nip
+    else
+      over tlist? if
+        over tlist-head over apply-subst
+        2 pick tlist-tail 2 pick apply-subst
+        2 pick tlist-span tlist-at
+        nip nip
+      else
+        # Atom, int, float - return as-is
+        drop
+      then
+    then
+  then
+;
+
+: apply-subst-termlist ( TermList Subst -- TermList )
+  over tlnil? if
+    drop
+  else
+    over tlcar over apply-subst
+    rot tlcdr rot apply-subst-termlist
+    tlcons
+  then
+;

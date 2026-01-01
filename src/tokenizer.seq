@@ -33,8 +33,8 @@ include "term"
 : tcons ( Token TokenList -- TokenList )
   Make-TCons ;
 
-: tnil? ( TokenList -- Int )
-  variant.tag 0 = ;
+: tnil? ( TokenList -- Bool )
+  variant.tag 0 i.= ;
 
 : tcar ( TokenList -- Token )
   0 variant.field-at ;
@@ -146,9 +146,9 @@ union TokState {
 
 : advance-col ( TokState -- TokState )
   dup state-input
-  over state-pos 1 add
+  over state-pos 1 i.+
   2 pick state-line
-  3 pick state-col 1 add
+  3 pick state-col 1 i.+
   make-pos
   2 pick state-accum
   3 pick state-tokens
@@ -157,8 +157,8 @@ union TokState {
 
 : advance-newline ( TokState -- TokState )
   dup state-input
-  over state-pos 1 add
-  2 pick state-line 1 add
+  over state-pos 1 i.+
+  2 pick state-line 1 i.+
   1
   make-pos
   2 pick state-accum
@@ -217,17 +217,17 @@ union TokState {
   over state-line
   2 pick state-col
   3 pick state-line
-  4 pick state-col 1 add
+  4 pick state-col 1 i.+
   make-span
   make-token
   over state-tokens tcons
   over state-input
-  2 pick state-pos 1 add
+  2 pick state-pos 1 i.+
   3 pick state-line
-  4 pick state-col 1 add
+  4 pick state-col 1 i.+
   make-pos
   3 pick state-line
-  4 pick state-col 1 add
+  4 pick state-col 1 i.+
   empty-accum
   3 roll
   make-state nip
@@ -237,17 +237,17 @@ union TokState {
   over state-line
   2 pick state-col
   3 pick state-line
-  4 pick state-col 2 add
+  4 pick state-col 2 i.+
   make-span
   make-token
   over state-tokens tcons
   over state-input
-  2 pick state-pos 2 add
+  2 pick state-pos 2 i.+
   3 pick state-line
-  4 pick state-col 2 add
+  4 pick state-col 2 i.+
   make-pos
   3 pick state-line
-  4 pick state-col 2 add
+  4 pick state-col 2 i.+
   empty-accum
   3 roll
   make-state nip
@@ -257,17 +257,17 @@ union TokState {
   over state-line
   2 pick state-col
   3 pick state-line
-  4 pick state-col 3 add
+  4 pick state-col 3 i.+
   make-span
   make-token
   over state-tokens tcons
   over state-input
-  2 pick state-pos 3 add
+  2 pick state-pos 3 i.+
   3 pick state-line
-  4 pick state-col 3 add
+  4 pick state-col 3 i.+
   make-pos
   3 pick state-line
-  4 pick state-col 3 add
+  4 pick state-col 3 i.+
   empty-accum
   3 roll
   make-state nip
@@ -277,32 +277,32 @@ union TokState {
 # Character Classification
 # ============================================
 
-: is-whitespace? ( Int -- Int )
-  dup 32 = over 9 = or over 13 = or swap 10 = or ;
+: is-whitespace? ( Int -- Bool )
+  dup 32 i.= over 9 i.= or over 13 i.= or swap 10 i.= or ;
 
-: is-digit? ( Int -- Int )
-  dup 48 >= swap 57 <= and ;
+: is-digit? ( Int -- Bool )
+  dup 48 i.>= swap 57 i.<= and ;
 
-: is-lowercase? ( Int -- Int )
-  dup 97 >= swap 122 <= and ;
+: is-lowercase? ( Int -- Bool )
+  dup 97 i.>= swap 122 i.<= and ;
 
-: is-uppercase? ( Int -- Int )
-  dup 65 >= swap 90 <= and ;
+: is-uppercase? ( Int -- Bool )
+  dup 65 i.>= swap 90 i.<= and ;
 
-: is-alpha? ( Int -- Int )
+: is-alpha? ( Int -- Bool )
   dup is-lowercase? swap is-uppercase? or ;
 
-: is-alnum? ( Int -- Int )
+: is-alnum? ( Int -- Bool )
   dup is-alpha? swap is-digit? or ;
 
-: is-atom-start? ( Int -- Int )
+: is-atom-start? ( Int -- Bool )
   is-lowercase? ;
 
-: is-var-start? ( Int -- Int )
-  dup is-uppercase? swap 95 = or ;  # uppercase or _
+: is-var-start? ( Int -- Bool )
+  dup is-uppercase? swap 95 i.= or ;  # uppercase or _
 
-: is-atom-cont? ( Int -- Int )
-  dup is-alnum? swap 95 = or ;  # alphanumeric or _
+: is-atom-cont? ( Int -- Bool )
+  dup is-alnum? swap 95 i.= or ;  # alphanumeric or _
 
 # ============================================
 # Main Tokenizer
@@ -320,7 +320,7 @@ union TokState {
 
 : tokenize-loop ( TokState -- TokState )
   dup state-input string.length
-  over state-pos <= if
+  over state-pos i.<= if
   else
     dup state-input over state-pos string.char-at
     handle-char-dispatch
@@ -330,7 +330,7 @@ union TokState {
 
 : handle-char-dispatch ( TokState Int -- TokState )
   # Newline
-  dup 10 = if
+  dup 10 i.= if
     drop handle-newline
   else
     # Whitespace
@@ -338,79 +338,79 @@ union TokState {
       drop handle-whitespace
     else
       # Percent - line comment
-      dup 37 = if
+      dup 37 i.= if
         drop handle-line-comment
       else
         # Slash - possible block comment or division
-        dup 47 = if
+        dup 47 i.= if
           drop handle-slash
         else
           # Open paren
-          dup 40 = if
+          dup 40 i.= if
             drop handle-lparen
           else
             # Close paren
-            dup 41 = if
+            dup 41 i.= if
               drop handle-rparen
             else
               # Open bracket
-              dup 91 = if
+              dup 91 i.= if
                 drop handle-lbracket
               else
                 # Close bracket
-                dup 93 = if
+                dup 93 i.= if
                   drop handle-rbracket
                 else
                   # Pipe
-                  dup 124 = if
+                  dup 124 i.= if
                     drop handle-pipe
                   else
                     # Comma
-                    dup 44 = if
+                    dup 44 i.= if
                       drop handle-comma
                     else
                       # Dot
-                      dup 46 = if
+                      dup 46 i.= if
                         drop handle-dot
                       else
                         # Colon (for :-)
-                        dup 58 = if
+                        dup 58 i.= if
                           drop handle-colon
                         else
                           # Question mark (for ?-)
-                          dup 63 = if
+                          dup 63 i.= if
                             drop handle-question
                           else
                             # Equals
-                            dup 61 = if
+                            dup 61 i.= if
                               drop handle-equals
                             else
                               # Backslash (for \=, \+)
-                              dup 92 = if
+                              dup 92 i.= if
                                 drop handle-backslash
                               else
                                 # Less than
-                                dup 60 = if
+                                dup 60 i.= if
                                   drop handle-less
                                 else
                                   # Greater than
-                                  dup 62 = if
+                                  dup 62 i.= if
                                     drop handle-greater
                                   else
                                     # Plus
-                                    dup 43 = if
+                                    dup 43 i.= if
                                       drop handle-plus
                                     else
                                       # Minus
-                                      dup 45 = if
+                                      dup 45 i.= if
                                         drop handle-minus
                                       else
                                         # Asterisk
-                                        dup 42 = if
+                                        dup 42 i.= if
                                           drop handle-asterisk
                                         else
                                           # Single quote
-                                          dup 39 = if
+                                          dup 39 i.= if
                                             drop handle-quoted-atom
                                           else
                                             # Digit - number
@@ -505,9 +505,9 @@ union TokState {
   emit-token
   # Check for :-
   dup state-input string.length
-  over state-pos 1 add > if
-    dup state-input over state-pos 1 add string.char-at
-    45 = if  # '-'
+  over state-pos 1 i.+ i.> if
+    dup state-input over state-pos 1 i.+ string.char-at
+    45 i.= if  # '-'
       ":-" emit-two-char start-token
     else
       ":" emit-single-char start-token
@@ -521,9 +521,9 @@ union TokState {
   emit-token
   # Check for ?-
   dup state-input string.length
-  over state-pos 1 add > if
-    dup state-input over state-pos 1 add string.char-at
-    45 = if  # '-'
+  over state-pos 1 i.+ i.> if
+    dup state-input over state-pos 1 i.+ string.char-at
+    45 i.= if  # '-'
       "?-" emit-two-char start-token
     else
       "?" emit-single-char start-token
@@ -537,15 +537,15 @@ union TokState {
   emit-token
   # Check for =:= or =\= or =< or ==
   dup state-input string.length
-  over state-pos 1 add > if
-    dup state-input over state-pos 1 add string.char-at
-    dup 58 = if  # ':'
+  over state-pos 1 i.+ i.> if
+    dup state-input over state-pos 1 i.+ string.char-at
+    dup 58 i.= if  # ':'
       drop
       # Check for =:=
       dup state-input string.length
-      over state-pos 2 add > if
-        dup state-input over state-pos 2 add string.char-at
-        61 = if  # '='
+      over state-pos 2 i.+ i.> if
+        dup state-input over state-pos 2 i.+ string.char-at
+        61 i.= if  # '='
           "=:=" emit-three-char start-token
         else
           "=" emit-single-char start-token
@@ -554,13 +554,13 @@ union TokState {
         "=" emit-single-char start-token
       then
     else
-      dup 92 = if  # '\'
+      dup 92 i.= if  # '\'
         drop
         # Check for =\=
         dup state-input string.length
-        over state-pos 2 add > if
-          dup state-input over state-pos 2 add string.char-at
-          61 = if  # '='
+        over state-pos 2 i.+ i.> if
+          dup state-input over state-pos 2 i.+ string.char-at
+          61 i.= if  # '='
             "=\\=" emit-three-char start-token
           else
             "=" emit-single-char start-token
@@ -569,10 +569,10 @@ union TokState {
           "=" emit-single-char start-token
         then
       else
-        dup 60 = if  # '<'
+        dup 60 i.= if  # '<'
           drop "=<" emit-two-char start-token
         else
-          dup 61 = if  # '='
+          dup 61 i.= if  # '='
             drop "==" emit-two-char start-token
           else
             drop "=" emit-single-char start-token
@@ -589,12 +589,12 @@ union TokState {
   emit-token
   # Check for \= or \+
   dup state-input string.length
-  over state-pos 1 add > if
-    dup state-input over state-pos 1 add string.char-at
-    dup 61 = if  # '='
+  over state-pos 1 i.+ i.> if
+    dup state-input over state-pos 1 i.+ string.char-at
+    dup 61 i.= if  # '='
       drop "\\=" emit-two-char start-token
     else
-      dup 43 = if  # '+'
+      dup 43 i.= if  # '+'
         drop "\\+" emit-two-char start-token
       else
         drop "\\" emit-single-char start-token
@@ -613,9 +613,9 @@ union TokState {
   emit-token
   # Check for >=
   dup state-input string.length
-  over state-pos 1 add > if
-    dup state-input over state-pos 1 add string.char-at
-    61 = if  # '='
+  over state-pos 1 i.+ i.> if
+    dup state-input over state-pos 1 i.+ string.char-at
+    61 i.= if  # '='
       ">=" emit-two-char start-token
     else
       ">" emit-single-char start-token
@@ -629,8 +629,8 @@ union TokState {
   emit-token
   # Check if next char is a digit (negative number)
   dup state-input string.length
-  over state-pos 1 add > if
-    dup state-input over state-pos 1 add string.char-at
+  over state-pos 1 i.+ i.> if
+    dup state-input over state-pos 1 i.+ string.char-at
     is-digit? if
       # Negative number - include minus in token
       start-token
@@ -649,9 +649,9 @@ union TokState {
   emit-token
   # Check for /* block comment
   dup state-input string.length
-  over state-pos 1 add > if
-    dup state-input over state-pos 1 add string.char-at
-    42 = if  # '*'
+  over state-pos 1 i.+ i.> if
+    dup state-input over state-pos 1 i.+ string.char-at
+    42 i.= if  # '*'
       advance-col advance-col
       skip-block-comment
       start-token
@@ -673,11 +673,11 @@ union TokState {
 
 : skip-to-eol ( TokState -- TokState )
   dup state-input string.length
-  over state-pos <= if
+  over state-pos i.<= if
     start-token
   else
     dup state-input over state-pos string.char-at
-    10 = if  # newline
+    10 i.= if  # newline
       advance-newline start-token
     else
       advance-col skip-to-eol
@@ -687,17 +687,17 @@ union TokState {
 
 : skip-block-comment ( TokState -- TokState )
   dup state-input string.length
-  over state-pos <= if
+  over state-pos i.<= if
     # End of input - unterminated comment
   else
     dup state-input over state-pos string.char-at
-    dup 42 = if  # '*'
+    dup 42 i.= if  # '*'
       drop
       # Check for */
       dup state-input string.length
-      over state-pos 1 add > if
-        dup state-input over state-pos 1 add string.char-at
-        47 = if  # '/'
+      over state-pos 1 i.+ i.> if
+        dup state-input over state-pos 1 i.+ string.char-at
+        47 i.= if  # '/'
           advance-col advance-col  # skip */
         else
           advance-col skip-block-comment
@@ -706,7 +706,7 @@ union TokState {
         advance-col
       then
     else
-      dup 10 = if  # newline
+      dup 10 i.= if  # newline
         drop advance-newline skip-block-comment
       else
         drop advance-col skip-block-comment
@@ -729,7 +729,7 @@ union TokState {
 
 : scan-atom ( TokState -- TokState )
   dup state-input string.length
-  over state-pos <= if
+  over state-pos i.<= if
   else
     dup state-input over state-pos string.char-at
     dup is-atom-cont? if
@@ -754,14 +754,14 @@ union TokState {
 
 : scan-quoted-atom ( TokState -- TokState )
   dup state-input string.length
-  over state-pos <= if
+  over state-pos i.<= if
     # End of input - unterminated quoted atom
   else
     dup state-input over state-pos string.char-at
-    dup 39 = if  # closing quote
+    dup 39 i.= if  # closing quote
       drop advance-col  # skip closing quote
     else
-      dup 92 = if  # backslash - escape
+      dup 92 i.= if  # backslash - escape
         drop handle-quoted-escape scan-quoted-atom
       else
         char->string append-to-token
@@ -774,17 +774,17 @@ union TokState {
 
 : handle-quoted-escape ( TokState -- TokState )
   dup state-input string.length
-  over state-pos 1 add > if
-    dup state-input over state-pos 1 add string.char-at
-    dup 39 = if  # escaped quote
+  over state-pos 1 i.+ i.> if
+    dup state-input over state-pos 1 i.+ string.char-at
+    dup 39 i.= if  # escaped quote
       drop 39 char->string append-to-token
       advance-col advance-col
     else
-      dup 92 = if  # escaped backslash
+      dup 92 i.= if  # escaped backslash
         drop 92 char->string append-to-token
         advance-col advance-col
       else
-        dup 110 = if  # \n
+        dup 110 i.= if  # \n
           drop 10 char->string append-to-token
           advance-col advance-col
         else
@@ -813,7 +813,7 @@ union TokState {
 
 : scan-variable ( TokState -- TokState )
   dup state-input string.length
-  over state-pos <= if
+  over state-pos i.<= if
   else
     dup state-input over state-pos string.char-at
     dup is-atom-cont? if
@@ -840,7 +840,7 @@ union TokState {
 
 : scan-number ( TokState -- TokState )
   dup state-input string.length
-  over state-pos <= if
+  over state-pos i.<= if
   else
     dup state-input over state-pos string.char-at
     dup is-digit? if
@@ -848,12 +848,12 @@ union TokState {
       advance-col
       scan-number
     else
-      dup 46 = if  # '.' - possible float
+      dup 46 i.= if  # '.' - possible float
         drop
         # Check if next is digit (float) or end (integer)
         dup state-input string.length
-        over state-pos 1 add > if
-          dup state-input over state-pos 1 add string.char-at
+        over state-pos 1 i.+ i.> if
+          dup state-input over state-pos 1 i.+ string.char-at
           is-digit? if
             "." append-to-token advance-col
             scan-float-decimal
@@ -872,7 +872,7 @@ union TokState {
 
 : scan-float-decimal ( TokState -- TokState )
   dup state-input string.length
-  over state-pos <= if
+  over state-pos i.<= if
   else
     dup state-input over state-pos string.char-at
     is-digit? if

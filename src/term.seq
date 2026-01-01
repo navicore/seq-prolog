@@ -2,14 +2,14 @@
 #
 # Algebraic Data Types for Prolog terms:
 #
-#   Term = TAtom String | TVar String Int | TCompound String TermList
+#   Term i.= TAtom String | TVar String Int | TCompound String TermList
 #        | TInt Int | TFloat Float | TList Term Term
-#   TermList = TLNil | TLCons Term TermList
-#   Clause = Clause Term GoalList
-#   GoalList = GNil | GCons Term GoalList
-#   ClauseDB = DBEmpty | DBCons Clause ClauseDB
-#   Subst = SubstEmpty | SubstExtend Binding Subst
-#   Binding = Bind Int Term
+#   TermList i.= TLNil | TLCons Term TermList
+#   Clause i.= Clause Term GoalList
+#   GoalList i.= GNil | GCons Term GoalList
+#   ClauseDB i.= DBEmpty | DBCons Clause ClauseDB
+#   Subst i.= SubstEmpty | SubstExtend Binding Subst
+#   Binding i.= Bind Int Term
 #
 # All types are defined here to support mutual recursion.
 
@@ -28,11 +28,11 @@ union SourceSpan {
 : make-span ( Int Int Int Int -- SourceSpan )
   Make-Span ;
 
-: span? ( SourceSpan -- Int )
-  variant.tag 1 = ;
+: span? ( SourceSpan -- Bool )
+  variant.tag 1 i.= ;
 
-: no-span? ( SourceSpan -- Int )
-  variant.tag 0 = ;
+: no-span? ( SourceSpan -- Bool )
+  variant.tag 0 i.= ;
 
 : span-start-line ( SourceSpan -- Int )
   0 variant.field-at ;
@@ -109,22 +109,22 @@ union Term {
 
 # Without span (use NoSpan)
 : tatom ( String -- Term )
-  no-span Make-TAtom ;
+  no-span tatom-at ;
 
 : tvar ( String Int -- Term )
-  no-span Make-TVar ;
+  no-span tvar-at ;
 
 : tcompound ( String TermList -- Term )
-  no-span Make-TCompound ;
+  no-span tcompound-at ;
 
 : tint ( Int -- Term )
-  no-span Make-TInt ;
+  no-span tint-at ;
 
 : tfloat ( Float -- Term )
-  no-span Make-TFloat ;
+  no-span tfloat-at ;
 
 : tlist ( Term Term -- Term )
-  no-span Make-TList ;
+  no-span tlist-at ;
 
 # Empty list atom
 : tempty-list ( -- Term )
@@ -137,42 +137,42 @@ union Term {
 # Term Predicates
 # ============================================
 
-: tatom? ( Term -- Int )
-  variant.tag 0 = ;
+: tatom? ( Term -- Bool )
+  variant.tag 0 i.= ;
 
-: tvar? ( Term -- Int )
-  variant.tag 1 = ;
+: tvar? ( Term -- Bool )
+  variant.tag 1 i.= ;
 
-: tcompound? ( Term -- Int )
-  variant.tag 2 = ;
+: tcompound? ( Term -- Bool )
+  variant.tag 2 i.= ;
 
-: tint? ( Term -- Int )
-  variant.tag 3 = ;
+: tint? ( Term -- Bool )
+  variant.tag 3 i.= ;
 
-: tfloat? ( Term -- Int )
-  variant.tag 4 = ;
+: tfloat? ( Term -- Bool )
+  variant.tag 4 i.= ;
 
-: tlist? ( Term -- Int )
-  variant.tag 5 = ;
+: tlist? ( Term -- Bool )
+  variant.tag 5 i.= ;
 
 # Check if term is the empty list atom []
-: tempty-list? ( Term -- Int )
+: tempty-list? ( Term -- Bool )
   dup tatom? if
     tatom-name "[]" string.equal?
   else
-    drop 0
+    drop false
   then
 ;
 
 # Check if term is a proper list (ends with [])
-: tproper-list? ( Term -- Int )
+: tproper-list? ( Term -- Bool )
   dup tempty-list? if
-    drop 1
+    drop true
   else
     dup tlist? if
       tlist-tail tproper-list?
     else
-      drop 0
+      drop false
     then
   then
 ;
@@ -248,8 +248,8 @@ union Term {
 : tlcons ( Term TermList -- TermList )
   Make-TLCons ;
 
-: tlnil? ( TermList -- Int )
-  variant.tag 0 = ;
+: tlnil? ( TermList -- Bool )
+  variant.tag 0 i.= ;
 
 : tlcar ( TermList -- Term )
   0 variant.field-at ;
@@ -265,7 +265,7 @@ union Term {
   swap dup tlnil? if
     drop
   else
-    tlcdr swap 1 add tllen-loop
+    tlcdr swap 1 i.+ tllen-loop
   then
 ;
 
@@ -308,8 +308,8 @@ union GoalList {
 : gcons ( Term GoalList -- GoalList )
   Make-GCons ;
 
-: gnull? ( GoalList -- Int )
-  variant.tag 0 = ;
+: gnull? ( GoalList -- Bool )
+  variant.tag 0 i.= ;
 
 : gcar ( GoalList -- Term )
   0 variant.field-at ;
@@ -325,7 +325,7 @@ union GoalList {
   swap dup gnull? if
     drop
   else
-    gcdr swap 1 add glen-loop
+    gcdr swap 1 i.+ glen-loop
   then
 ;
 
@@ -375,7 +375,7 @@ union Clause {
   1 variant.field-at ;
 
 # Check if clause is a fact (empty body)
-: clause-fact? ( Clause -- Int )
+: clause-fact? ( Clause -- Bool )
   clause-body gnull? ;
 
 # ============================================
@@ -393,8 +393,8 @@ union ClauseDB {
 : db-cons ( Clause ClauseDB -- ClauseDB )
   Make-DBCons ;
 
-: db-empty? ( ClauseDB -- Int )
-  variant.tag 0 = ;
+: db-empty? ( ClauseDB -- Bool )
+  variant.tag 0 i.= ;
 
 : db-first ( ClauseDB -- Clause )
   0 variant.field-at ;
@@ -422,7 +422,7 @@ union ClauseDB {
   swap dup db-empty? if
     drop
   else
-    db-rest swap 1 add db-count-loop
+    db-rest swap 1 i.+ db-count-loop
   then
 ;
 
@@ -454,8 +454,8 @@ union Subst {
 : subst-extend ( Binding Subst -- Subst )
   Make-SubstExtend ;
 
-: subst-empty? ( Subst -- Int )
-  variant.tag 0 = ;
+: subst-empty? ( Subst -- Bool )
+  variant.tag 0 i.= ;
 
 : subst-binding ( Subst -- Binding )
   0 variant.field-at ;
@@ -468,15 +468,15 @@ union Subst {
   rot rot make-binding swap subst-extend ;
 
 # Lookup variable in substitution
-# Returns: Option<Term> (using 0/1 flag + value on stack)
-: subst-lookup ( Int Subst -- Int Term )
+# Returns: Option<Term> (using Bool flag + value on stack)
+: subst-lookup ( Int Subst -- Bool Term )
   dup subst-empty? if
-    drop drop 0 tempty-list  # Not found (dummy term)
+    drop drop false tempty-list  # Not found (dummy term)
   else
     dup subst-binding
     dup binding-var-id
-    3 pick = if
-      binding-value nip nip 1 swap  # Found
+    3 pick i.= if
+      binding-value nip nip true swap  # Found
     else
       drop subst-parent subst-lookup
     then
@@ -517,8 +517,8 @@ union ChoiceStack {
 : cpcons ( ChoicePoint ChoiceStack -- ChoiceStack )
   Make-CPCons ;
 
-: cpnil? ( ChoiceStack -- Int )
-  variant.tag 0 = ;
+: cpnil? ( ChoiceStack -- Bool )
+  variant.tag 0 i.= ;
 
 : cpcar ( ChoiceStack -- ChoicePoint )
   0 variant.field-at ;
@@ -545,14 +545,14 @@ union SolveResult {
 : make-solve-error ( String SourceSpan -- SolveResult )
   Make-SolveError ;
 
-: solve-success? ( SolveResult -- Int )
-  variant.tag 0 = ;
+: solve-success? ( SolveResult -- Bool )
+  variant.tag 0 i.= ;
 
-: solve-failure? ( SolveResult -- Int )
-  variant.tag 1 = ;
+: solve-failure? ( SolveResult -- Bool )
+  variant.tag 1 i.= ;
 
-: solve-error? ( SolveResult -- Int )
-  variant.tag 2 = ;
+: solve-error? ( SolveResult -- Bool )
+  variant.tag 2 i.= ;
 
 : solve-success-subst ( SolveResult -- Subst )
   0 variant.field-at ;
@@ -584,11 +584,11 @@ union UnifyResult {
 : make-unify-fail ( -- UnifyResult )
   Make-UnifyFail ;
 
-: unify-ok? ( UnifyResult -- Int )
-  variant.tag 0 = ;
+: unify-ok? ( UnifyResult -- Bool )
+  variant.tag 0 i.= ;
 
-: unify-fail? ( UnifyResult -- Int )
-  variant.tag 1 = ;
+: unify-fail? ( UnifyResult -- Bool )
+  variant.tag 1 i.= ;
 
 : unify-ok-subst ( UnifyResult -- Subst )
   0 variant.field-at ;
@@ -626,17 +626,17 @@ union Token {
 : make-parse-err ( String SourceSpan -- ParseResult )
   Make-ParseErr ;
 
-: parse-ok-term? ( ParseResult -- Int )
-  variant.tag 0 = ;
+: parse-ok-term? ( ParseResult -- Bool )
+  variant.tag 0 i.= ;
 
-: parse-ok-clause? ( ParseResult -- Int )
-  variant.tag 1 = ;
+: parse-ok-clause? ( ParseResult -- Bool )
+  variant.tag 1 i.= ;
 
-: parse-ok-query? ( ParseResult -- Int )
-  variant.tag 2 = ;
+: parse-ok-query? ( ParseResult -- Bool )
+  variant.tag 2 i.= ;
 
-: parse-err? ( ParseResult -- Int )
-  variant.tag 3 = ;
+: parse-err? ( ParseResult -- Bool )
+  variant.tag 3 i.= ;
 
 : parse-term-value ( ParseResult -- Term )
   0 variant.field-at ;
@@ -681,14 +681,14 @@ union ArithResult {
 : make-arith-err ( String -- ArithResult )
   Make-ArithErr ;
 
-: arith-int? ( ArithResult -- Int )
-  variant.tag 0 = ;
+: arith-int? ( ArithResult -- Bool )
+  variant.tag 0 i.= ;
 
-: arith-float? ( ArithResult -- Int )
-  variant.tag 1 = ;
+: arith-float? ( ArithResult -- Bool )
+  variant.tag 1 i.= ;
 
-: arith-err? ( ArithResult -- Int )
-  variant.tag 2 = ;
+: arith-err? ( ArithResult -- Bool )
+  variant.tag 2 i.= ;
 
 : arith-int-value ( ArithResult -- Int )
   0 variant.field-at ;

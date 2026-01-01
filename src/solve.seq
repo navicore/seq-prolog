@@ -1,0 +1,307 @@
+# Solve Engine for SeqProlog
+#
+# Simple depth-first solver that returns first solution.
+# TODO: Add weave-based backtracking for multiple solutions.
+
+include "term"
+include "unify"
+include "builtins"
+
+# ============================================
+# Variable Renaming
+# ============================================
+
+: rename-term ( Term Int -- Term Int )
+  over tvar? if
+    # Stack: term counter
+    over tvar-name over no-span tvar-at
+    # Stack: term counter new_var
+    rot drop swap 1 i.+  # drop old term, increment counter
+    # Stack: new_var (counter+1)
+  else
+    over tcompound? if
+      over tcompound-args over rename-termlist
+      rot drop
+      swap rot tcompound-functor swap
+      no-span tcompound-at swap
+    else
+      over tlist? if
+        # Stack: term counter
+        over tlist-head over rename-term
+        # Stack: term counter renamed-head new-counter
+        # Indices: 0=new-counter 1=renamed-head 2=counter 3=term
+        3 pick tlist-tail over rename-term
+        # Stack: term counter renamed-head new-counter renamed-tail final-counter
+        rot drop
+        swap no-span tlist-at
+        nip nip swap
+      else
+        # Atom/int/float unchanged
+      then
+    then
+  then
+;
+
+: rename-termlist ( TermList Int -- TermList Int )
+  over tlnil? if
+  else
+    # Stack: list counter
+    over tlcar over rename-term
+    # Stack: list counter renamed-car new-counter
+    # Indices: 0=new-counter 1=renamed-car 2=counter 3=list
+    3 pick tlcdr over rename-termlist
+    # Stack: list counter renamed-car new-counter renamed-cdr final-counter
+    # Indices: 0=final-counter 1=renamed-cdr 2=new-counter 3=renamed-car 4=counter 5=list
+    rot drop
+    # Stack: list counter renamed-car renamed-cdr final-counter
+    # Need tlcons(renamed-car, renamed-cdr), keep final-counter
+    rot rot tlcons        # rot rot puts car/cdr in right order for tlcons
+    # Stack: list counter final-counter new-list
+    rot drop              # bring counter to top and drop it: list final-counter new-list
+    rot drop              # bring list to top and drop it: final-counter new-list
+    swap                  # new-list final-counter
+  then
+;
+
+: rename-clause ( Clause Int -- Clause Int )
+  # Stack: clause counter
+  over clause-head over rename-term
+  # Stack: clause counter renamed-head new-counter
+  # Indices: 0=new-counter 1=renamed-head 2=counter 3=clause
+  3 pick clause-body over rename-goals
+  # Stack: clause counter renamed-head new-counter renamed-body final-counter
+  # Indices: 0=final-counter 1=renamed-body 2=new-counter 3=renamed-head 4=counter 5=clause
+  # We need to call make-clause(renamed-head, renamed-body) and keep final-counter
+  rot drop            # drop new-counter: clause counter renamed-head renamed-body final-counter
+  rot                 # clause counter renamed-body final-counter renamed-head
+  rot                 # clause counter final-counter renamed-head renamed-body
+  make-clause         # clause counter final-counter renamed-clause
+  rot                 # clause final-counter renamed-clause counter
+  drop                # clause final-counter renamed-clause
+  rot                 # final-counter renamed-clause clause
+  drop                # final-counter renamed-clause
+  swap                # renamed-clause final-counter
+;
+
+: rename-goals ( GoalList Int -- GoalList Int )
+  over gnull? if
+  else
+    # Stack: goals counter
+    over gcar over rename-term
+    # Stack: goals counter renamed-goal new-counter
+    # Indices: 0=new-counter 1=renamed-goal 2=counter 3=goals
+    3 pick gcdr over rename-goals
+    # Stack: goals counter renamed-goal new-counter renamed-rest final-counter
+    # Indices: 0=final-counter 1=renamed-rest 2=new-counter 3=renamed-goal 4=counter 5=goals
+    rot drop
+    # Stack: goals counter renamed-goal renamed-rest final-counter
+    # Need gcons(renamed-goal, renamed-rest), keep final-counter
+    rot rot gcons         # rot rot puts goal/rest in right order for gcons
+    # Stack: goals counter final-counter new-goals
+    rot drop              # bring counter to top and drop it: goals final-counter new-goals
+    rot drop              # bring goals to top and drop it: final-counter new-goals
+    swap                  # new-goals final-counter
+  then
+;
+
+# ============================================
+# Find Matching Clauses
+# ============================================
+
+: matching-clauses ( Term ClauseDB -- ClauseDB )
+  db-empty matching-loop ;
+
+: matching-loop ( Term ClauseDB ClauseDB -- ClauseDB )
+  # Stack: goal input-db result-db
+  over db-empty? if
+    # Input exhausted, return result
+    nip nip
+  else
+    # Check if first clause matches
+    over db-first clause-head   # Stack: goal input-db result-db head
+    # Indices: 0=head 1=result-db 2=input-db 3=goal
+    3 pick could-match? if      # could-match? consumes head and goal-copy, returns bool
+      # Match! Add clause to result
+      # Stack: goal input-db result-db (head was consumed by could-match?)
+      over db-first             # Stack: goal input-db result-db clause
+      swap                      # Stack: goal input-db clause result-db
+      db-append                 # Stack: goal input-db new-result
+      swap db-rest swap         # Stack: goal input-rest new-result
+      matching-loop
+    else
+      # No match, continue with rest
+      # Stack: goal input-db result-db (head was consumed by could-match?)
+      swap db-rest swap         # Stack: goal input-rest result-db
+      matching-loop
+    then
+  then
+;
+
+: could-match? ( Term Term -- Bool )
+  over tcompound? over tcompound? and if
+    over tcompound-functor over tcompound-functor string.equal? if
+      over tcompound-args tllen swap tcompound-args tllen i.= nip
+    else
+      drop drop false
+    then
+  else
+    over tatom? over tatom? and if
+      over tatom-name swap tatom-name string.equal? nip
+    else
+      drop drop true  # Variables can match anything
+    then
+  then
+;
+
+# ============================================
+# Simple Solver (first solution only)
+# ============================================
+
+# Simple solve that returns first solution only
+: solve-first ( GoalList ClauseDB Subst Int -- SolveResult )
+  solve-goals-simple
+;
+
+: solve-goals-simple ( GoalList ClauseDB Subst Int -- SolveResult )
+  # Stack: goals db subst counter
+  # Indices: 0=counter 1=subst 2=db 3=goals
+  3 pick gnull? if
+    # No goals - success with current subst
+    # Stack: goals db subst counter
+    rot drop rot drop  # drop goals, db
+    cpnil swap make-solve-success
+  else
+    # Get first goal and remaining goals
+    3 pick gcar     # goal (depth 3 is goals)
+    4 pick gcdr     # rest (now goals is at depth 4 after pushing goal)
+    # Stack: goals db subst counter goal rest
+
+    # Check if goal is a built-in
+    over builtin? if
+      solve-builtin-goal
+    else
+      # Find matching clauses in database
+      # Stack: goals db subst counter goal rest
+      # Indices: 0=rest 1=goal 2=counter 3=subst 4=db 5=goals
+      # After over: 0=goal 1=rest 2=goal 3=counter 4=subst 5=db 6=goals
+      over 5 pick matching-clauses
+      # Stack: goals db subst counter goal rest matches
+      try-clauses-simple
+    then
+  then
+;
+
+# Handle built-in goal
+# Stack: goals db subst counter goal rest
+: solve-builtin-goal ( GoalList ClauseDB Subst Int Term GoalList -- SolveResult )
+  # Execute built-in with goal and current subst
+  over    # goal
+  4 pick  # subst
+  exec-builtin
+  # Stack: goals db subst counter goal rest result
+
+  dup unify-ok? if
+    unify-ok-subst
+    # Stack: goals db subst counter goal rest new_subst
+
+    # Clean up and continue with rest goals
+    rot drop    # drop goal
+    5 roll drop # drop old goals
+    # Stack: db subst counter rest new_subst
+
+    rot drop    # drop old subst
+    # Stack: db counter rest new_subst
+
+    rot         # Stack: db rest new_subst counter
+    rot         # Stack: db new_subst counter rest
+    3 roll      # Stack: new_subst counter rest db
+    rot         # Stack: counter rest db new_subst
+    3 roll      # Stack: rest db new_subst counter
+
+    # Now: rest db new_subst counter - recurse
+    solve-goals-simple
+  else
+    # Built-in failed
+    drop drop drop drop drop drop drop
+    make-solve-failure
+  then
+;
+
+: try-clauses-simple ( GoalList ClauseDB Subst Int Term GoalList ClauseDB -- SolveResult )
+  dup db-empty? if
+    # No matches - failure
+    drop drop drop drop drop drop drop
+    make-solve-failure
+  else
+    # Try first clause
+    dup db-first
+    4 pick rename-clause
+    # Stack: ... matches clause counter'
+
+    # Unify goal with clause head
+    # Stack: goals db subst counter goal rest matches clause counter'
+    # Indices: 0=counter' 1=clause 2=matches 3=rest 4=goal 5=counter 6=subst 7=db 8=goals
+    4 pick                 # get goal: stack += goal
+    # Indices: 0=goal 1=counter' 2=clause ...
+    2 pick clause-head     # get clause, extract head
+    # Indices: 0=head 1=goal 2=counter' 3=clause 4=matches 5=rest 6=goal 7=counter 8=subst
+    8 pick                 # get subst
+    # Stack top: subst head goal -> ready for unify(goal, head, subst)
+    unify
+    # Stack: ... matches clause counter' unify_result
+
+    dup unify-ok? if
+      unify-ok-subst
+      # Stack: ... matches clause counter' new_subst
+
+      # New goals i.= clause_body ++ rest
+      # Stack: ... matches clause counter' new_subst
+      # Indices: 0=new_subst 1=counter' 2=clause 3=matches
+      2 pick clause-body 5 pick gappend
+      # Stack: ... matches clause counter' new_subst new_goals
+      # Indices: 0=new_goals 1=new_subst 2=counter' 3=clause 4=matches
+      #          5=rest 6=goal 7=counter 8=subst 9=db 10=goals
+
+      # Recurse - need to set up: new_goals db new_subst counter'
+      # Currently top 3 are: counter'(2) new_subst(1) new_goals(0)
+      rot rot  # Reorder: new_goals(0) counter'(1) new_subst(2) -> becomes new_goals counter' new_subst
+      9 pick   # Get db: new_goals counter' new_subst db
+      swap     # new_goals counter' db new_subst
+      rot      # new_goals db new_subst counter'
+      # Stack: ... matches clause new_goals db new_subst counter'
+
+      solve-goals-simple
+      # Stack: ... matches clause result
+
+      dup solve-success? if
+        # Found solution, clean up and return
+        nip nip
+        6 roll drop 5 roll drop 4 roll drop
+        3 roll drop rot drop swap drop
+      else
+        dup solve-failure? if
+          # Try next clause
+          drop drop  # result, clause
+          db-rest
+          try-clauses-simple
+        else
+          # Error - propagate
+          nip nip
+          6 roll drop 5 roll drop 4 roll drop
+          3 roll drop rot drop swap drop
+        then
+      then
+    else
+      drop drop drop  # unify_fail, counter', clause
+      db-rest try-clauses-simple
+    then
+  then
+;
+
+# ============================================
+# Query Execution (simple version)
+# ============================================
+
+: run-query ( GoalList ClauseDB -- SolveResult )
+  subst-empty 0 solve-first
+;

@@ -1,0 +1,6 @@
+include "src/parser"
+
+: main ( -- )
+  "foo" no-span tatom-at
+  term-to-string io.write-line
+;
