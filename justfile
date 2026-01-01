@@ -1,24 +1,49 @@
-# SeqProlog - A Prolog interpreter written in Seq
+# SeqProlog - A compiled Prolog implementation
 #
+# Compiles .sprolog files to native executables via Seq.
 # Requires: seqc (the Seq compiler) on PATH
 
 default:
     @just --list
 
-# Build SeqProlog
+# Build the SeqProlog compiler
 build:
-    @echo "Building SeqProlog..."
+    @echo "Building SeqProlog compiler..."
     @mkdir -p target
-    seqc build src/repl.seq -o target/seqprolog
+    seqc build src/compiler.seq -o target/seqprolog
     @echo "Built: target/seqprolog"
 
-# Run the interactive REPL
-repl: build
-    ./target/seqprolog
+# Build the interpreter (legacy, for testing)
+build-repl:
+    @echo "Building SeqProlog REPL (interpreter mode)..."
+    @mkdir -p target
+    seqc build src/repl.seq -o target/seqprolog-repl
+    @echo "Built: target/seqprolog-repl"
 
-# Run a Prolog file
-run file: build
+# Run the REPL (interpreter mode)
+repl: build-repl
+    ./target/seqprolog-repl
+
+# Compile a Prolog file to Seq code (output to stdout)
+codegen file: build
     ./target/seqprolog {{file}}
+
+# Compile a Prolog file to executable
+compile file output="target/prolog-out": build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Generate Seq code to temp file in src directory (for include paths)
+    temp_seq="src/.seqprolog-temp.seq"
+    trap "rm -f $temp_seq" EXIT
+    ./target/seqprolog {{file}} > "$temp_seq"
+    # Compile the generated Seq code
+    seqc build "$temp_seq" -o {{output}}
+    rm -f "$temp_seq"
+    echo "Compiled: {{file}} -> {{output}}"
+
+# Compile and run a Prolog file
+run file: (compile file)
+    ./target/prolog-out
 
 # Run Seq-level unit tests
 test:
@@ -26,13 +51,28 @@ test:
     set -euo pipefail
     echo "Running Seq unit tests..."
     mkdir -p target/tests
+    failed=0
     for test in tests/seq/test_*.seq; do
         if [ -f "$test" ]; then
             name=$(basename "$test" .seq)
-            echo "  $name..."
-            seqc build "$test" -o "target/tests/$name" && "./target/tests/$name" > /dev/null
+            echo -n "  $name... "
+            if seqc build "$test" -o "target/tests/$name" 2>&1; then
+                if "./target/tests/$name" > /dev/null 2>&1; then
+                    echo "ok"
+                else
+                    echo "FAILED (runtime)"
+                    failed=1
+                fi
+            else
+                echo "FAILED (compile)"
+                failed=1
+            fi
         fi
     done
+    if [ $failed -eq 1 ]; then
+        echo "Some tests failed!"
+        exit 1
+    fi
     echo "All Seq tests passed!"
 
 # Run Seq tests with output
@@ -40,14 +80,30 @@ test-verbose:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p target/tests
+    failed=0
     for test in tests/seq/test_*.seq; do
         if [ -f "$test" ]; then
             name=$(basename "$test" .seq)
             echo "=== $name ==="
-            seqc build "$test" -o "target/tests/$name" && "./target/tests/$name"
+            if seqc build "$test" -o "target/tests/$name"; then
+                if "./target/tests/$name"; then
+                    echo "PASSED"
+                else
+                    echo "FAILED (runtime)"
+                    failed=1
+                fi
+            else
+                echo "FAILED (compile)"
+                failed=1
+            fi
             echo ""
         fi
     done
+    if [ $failed -eq 1 ]; then
+        echo "Some tests failed!"
+        exit 1
+    fi
+    echo "All tests passed!"
 
 # Run all examples
 examples: build

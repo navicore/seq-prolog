@@ -7,7 +7,7 @@
 # - Comparison: <, >, =<, >=, =:=, =\=
 
 include "term"
-include "unify"
+include "runtime/unify"
 
 # ============================================
 # Built-in Detection

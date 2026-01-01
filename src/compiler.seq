@@ -1,0 +1,86 @@
+# SeqProlog Compiler
+#
+# Compiles .sprolog files to Seq source code.
+# The generated code is output to stdout (MVP approach).
+#
+# Usage:
+#   seqprolog input.sprolog              # Output Seq code to stdout
+#   seqprolog input.sprolog > out.seq    # Redirect to file
+#   seqprolog input.sprolog | seqc build /dev/stdin -o output  # Pipe to seqc
+
+include "parser"
+include "codegen"
+include "version"
+
+# ============================================
+# Compilation Pipeline
+# ============================================
+
+: compile-to-stdout ( String -- Bool )
+  # source-path -- success?
+
+  # Step 1: Read source file
+  file.slurp not if
+    drop "Error: Could not read input file" io.write-line
+    false
+  else
+    # Step 2: Parse all clauses from source
+    parse-all-clauses
+    dup parse-all-ok? not if
+      "Error: " swap parse-all-error string.concat io.write-line
+      false
+    else
+      # Step 3: Extract clause database
+      parse-all-clauses-db
+
+      # Step 4: Generate Seq code and output to stdout
+      "" gen-program  # empty query for now
+      io.write-line
+      true
+    then
+  then
+;
+
+# ============================================
+# Main Entry Point
+# ============================================
+
+: main ( -- )
+  args.count 1 i.> if
+    1 args.at
+    dup "--version" string.equal? if
+      drop print-version
+    else
+      dup "--help" string.equal? over "-h" string.equal? or if
+        drop print-usage
+      else
+        # Compile the file, output Seq code to stdout
+        compile-to-stdout
+        not if
+          1 os.exit
+        then
+      then
+    then
+  else
+    print-usage
+  then
+;
+
+: print-usage ( -- )
+  "SeqProlog Compiler " seqprolog-version string.concat io.write-line
+  "" io.write-line
+  "Usage:" io.write-line
+  "  seqprolog <input.sprolog>                    Generate Seq code to stdout" io.write-line
+  "  seqprolog <input.sprolog> > out.seq          Redirect to file" io.write-line
+  "" io.write-line
+  "To compile to executable:" io.write-line
+  "  just compile examples/family.sprolog         Uses justfile recipe" io.write-line
+  "" io.write-line
+  "Options:" io.write-line
+  "  --version     Show version" io.write-line
+  "  --help, -h    Show this help" io.write-line
+;
+
+: print-version ( -- )
+  "SeqProlog " seqprolog-version string.concat io.write-line
+;

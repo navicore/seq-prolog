@@ -158,11 +158,10 @@ include "tokenizer"
         # RULE: term ':-' body '.'
         tcdr
         # Stack: ParseResult counter HeadTerm body_tokens
-        swap  # Stack: ParseResult counter body_tokens HeadTerm
-        3 roll  # Stack: ParseResult body_tokens HeadTerm counter
-        swap rot  # Stack: ParseResult HeadTerm body_tokens counter
+        rot
+        # Stack: ParseResult HeadTerm body_tokens counter
         parse-goals-with-counter
-        # Stack: ParseResult HeadTerm BodyResult counter
+        # Stack: ParseResult HeadTerm BodyResult new_counter
         drop  # drop counter
         # Stack: ParseResult HeadTerm BodyResult
         dup parse-ok-term? if
@@ -223,7 +222,7 @@ include "tokenizer"
         over parse-term-value  # Stack: first-term rest-result rest-counter rest-term
         2 pick parse-term-remaining  # Stack: first-term rest-result rest-counter rest-term remaining
         4 roll  # Stack: rest-result rest-counter rest-term remaining first-term
-        swap rot  # Stack: rest-result rest-counter remaining first-term rest-term
+        rot  # Stack: rest-result rest-counter remaining first-term rest-term
         tl2 "," swap no-span tcompound-at  # Stack: rest-result rest-counter remaining comma-term
         swap make-parse-ok-term  # Stack: rest-result rest-counter new-result
         rot drop  # Stack: rest-counter new-result
@@ -748,6 +747,73 @@ include "tokenizer"
         "Query: " parse-query-goals goals-to-string string.concat io.write-line
       else
         "Error: " parse-err-message string.concat io.write-line
+      then
+    then
+  then
+;
+
+# ============================================
+# Multi-Clause Parsing (for compiler)
+# ============================================
+
+# Result type for parsing all clauses
+union ParseAllResult {
+  ParseAllOk { db: ClauseDB }
+  ParseAllErr { message: String }
+}
+
+: parse-all-ok? ( ParseAllResult -- Bool )
+  variant.tag 0 i.= ;
+
+: parse-all-error ( ParseAllResult -- String )
+  0 variant.field-at ;
+
+: parse-all-clauses-db ( ParseAllResult -- ClauseDB )
+  0 variant.field-at ;
+
+: make-parse-all-ok ( ClauseDB -- ParseAllResult )
+  Make-ParseAllOk ;
+
+: make-parse-all-err ( String -- ParseAllResult )
+  Make-ParseAllErr ;
+
+# Parse all clauses from source string
+: parse-all-clauses ( String -- ParseAllResult )
+  tokenize
+  db-empty  # empty clause db
+  swap   # Stack: db tokens
+  parse-clauses-loop
+;
+
+# Loop through tokens, parsing clauses until done
+: parse-clauses-loop ( ClauseDB TokenList -- ParseAllResult )
+  dup tnil? if
+    # Done - all tokens consumed
+    drop make-parse-all-ok
+  else
+    # Try to parse a clause
+    parse-clause
+    # Stack: db ParseResult
+    dup parse-ok-clause? if
+      # Got a clause - add to db and continue
+      dup parse-clause-value
+      # Stack: db ParseResult Clause
+      rot
+      # Stack: ParseResult Clause db
+      db-append
+      # Stack: ParseResult db'
+      swap parse-clause-remaining
+      # Stack: db' remaining
+      parse-clauses-loop
+    else
+      dup parse-ok-query? if
+        # Got a query - skip for now (TODO: handle queries)
+        parse-query-remaining
+        parse-clauses-loop
+      else
+        # Error
+        nip  # drop db
+        parse-err-message make-parse-all-err
       then
     then
   then

@@ -6,7 +6,7 @@
 # - File loading
 
 include "parser"
-include "solve"
+include "runtime/solve"
 include "version"
 
 # ============================================
