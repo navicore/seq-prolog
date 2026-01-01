@@ -2,12 +2,49 @@
 #
 # Generates Seq source code from parsed Prolog AST.
 # The generated code links against the runtime library.
-#
-# TODO: Add string escaping for atom/functor names containing
-#       special characters (backslash, double quote).
-#       Currently assumes names are simple identifiers.
 
 include "term"
+
+# ============================================
+# String Escaping
+# ============================================
+
+# Escape special characters in strings for Seq code generation.
+# Escapes backslash and double quote to prevent code injection.
+
+: escape-string-loop ( String Int String -- String )
+  # Stack: input pos acc
+  2 pick string.length 2 pick i.<= if
+    # pos >= length: done, return accumulator
+    nip nip
+  else
+    # Get char at input[pos]
+    2 pick 2 pick string.char-at
+    dup 92 i.= if
+      # Backslash (92) -> double it
+      drop
+      92 char->string 92 char->string string.concat
+      string.concat
+      swap 1 i.add swap
+      escape-string-loop
+    else dup 34 i.= if
+      # Double quote (34) -> escape with backslash
+      drop
+      92 char->string 34 char->string string.concat
+      string.concat
+      swap 1 i.add swap
+      escape-string-loop
+    else
+      # Regular char -> append as-is
+      char->string string.concat
+      swap 1 i.add swap
+      escape-string-loop
+    then then
+  then
+;
+
+: escape-string ( String -- String )
+  0 "" escape-string-loop ;
 
 # ============================================
 # Term to Seq Code
@@ -17,11 +54,11 @@ include "term"
 : gen-term ( Term -- String )
   dup tatom? if
     # Atoms: "name" no-span tatom-at
-    tatom-name "\"" swap string.concat "\" no-span tatom-at" string.concat
+    tatom-name escape-string "\"" swap string.concat "\" no-span tatom-at" string.concat
   else
     dup tvar? if
       # Variables: "Name" id no-span tvar-at
-      dup tvar-name
+      dup tvar-name escape-string
       swap tvar-id int->string
       # Stack: name id-str
       "\"" rot string.concat "\" " string.concat
@@ -33,7 +70,7 @@ include "term"
       else
         dup tcompound? if
           # Compound terms: need to generate args first, then functor
-          dup tcompound-functor
+          dup tcompound-functor escape-string
           swap tcompound-args gen-termlist
           # Stack: functor args-code
           swap "\"" swap string.concat "\" " string.concat
