@@ -1,0 +1,200 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # Linux: Build in Alpine container for native musl
+  build-linux:
+    name: Build Linux (musl)
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            rust cargo \
+            clang lld \
+            musl-dev \
+            git \
+            bash \
+            binutils \
+            libedit-dev \
+            libedit-static \
+            ncurses-dev \
+            ncurses-static
+
+      - name: Install just
+        run: |
+          wget -qO- https://github.com/casey/just/releases/download/1.36.0/just-1.36.0-x86_64-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin
+
+      - name: Build seqc from patch-seq
+        run: |
+          git clone --depth 1 https://github.com/navicore/patch-seq.git
+          cd patch-seq
+          cargo build --release -p seq-compiler
+          cp target/release/seqc /usr/local/bin/
+
+      - name: Setup static clang wrapper
+        run: |
+          # Create wrapper that forces static linking
+          # Append ncurses after libedit (link order matters for static libs)
+          mv /usr/bin/clang /usr/bin/clang-real
+          cat > /usr/bin/clang << 'EOF'
+          #!/bin/sh
+          exec /usr/bin/clang-real -static "$@" -lncursesw
+          EOF
+          chmod +x /usr/bin/clang
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update version.seq
+        run: |
+          cat > src/version.seq << EOF
+          # SeqProlog Version Information
+
+          : seqprolog-version ( -- String )
+            "${{ steps.version.outputs.version }}" ;
+
+          : seqprolog-name ( -- String )
+            "SeqProlog" ;
+          EOF
+
+      - name: Build SeqProlog
+        run: just build
+
+      - name: Test
+        run: just test
+
+      - name: Verify static linking
+        run: |
+          # Fail if binary has dynamic interpreter (means it's not static)
+          if readelf -l target/seqprolog | grep -q "INTERP"; then
+            echo "ERROR: Binary is dynamically linked!"
+            readelf -l target/seqprolog | grep INTERP
+            exit 1
+          fi
+          echo "Verified: Binary is statically linked"
+
+      - name: Rename binary
+        run: mv target/seqprolog target/seqprolog-linux-x86_64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: seqprolog-linux-x86_64
+          path: target/seqprolog-linux-x86_64
+
+  # macOS: Standard build
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: macos-cargo-release
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install seqc
+        run: cargo install seq-compiler --force
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update version.seq
+        run: |
+          cat > src/version.seq << EOF
+          # SeqProlog Version Information
+
+          : seqprolog-version ( -- String )
+            "${{ steps.version.outputs.version }}" ;
+
+          : seqprolog-name ( -- String )
+            "SeqProlog" ;
+          EOF
+
+      - name: Build SeqProlog
+        run: just build
+
+      - name: Test
+        run: just test
+
+      - name: Rename binary
+        run: mv target/seqprolog target/seqprolog-macos-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: seqprolog-macos-arm64
+          path: target/seqprolog-macos-arm64
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            Download the binary for your platform and make it executable:
+
+            ```bash
+            chmod +x seqprolog-*
+            ```
+
+            ### macOS
+
+            macOS quarantines unsigned binaries. After downloading, remove the quarantine attribute:
+
+            ```bash
+            xattr -d com.apple.quarantine ./seqprolog-macos-arm64
+            ```
+
+            ### Linux
+
+            The Linux binary is statically linked and should run on any x86_64 Linux system.
+
+            ---
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
