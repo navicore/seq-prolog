@@ -3,7 +3,7 @@
 # Implements Robinson's unification algorithm with occurs check.
 # Returns UnifyResult: UnifyOk { subst } | UnifyFail
 
-include "term"
+include "../term"
 
 # ============================================
 # Dereference: Follow variable bindings

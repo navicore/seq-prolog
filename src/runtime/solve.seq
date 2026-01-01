@@ -3,9 +3,9 @@
 # Simple depth-first solver that returns first solution.
 # TODO: Add weave-based backtracking for multiple solutions.
 
-include "term"
+include "../term"
 include "unify"
-include "builtins"
+include "../builtins"
 
 # ============================================
 # Variable Renaming

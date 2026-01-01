@@ -9,7 +9,5 @@ likes(john, mary).
 % Simple rule
 happy(X) :- likes(X, wine).
 
-% Query tests
-?- likes(mary, food).
-?- happy(mary).
-?- happy(john).
+% Multi-body rule
+friend(X, Y) :- likes(X, Z), likes(Y, Z).

@@ -25,3 +25,4 @@ tests/seq/test_*
 # Local configuration
 .envrc
 .direnv/
+tmp/
