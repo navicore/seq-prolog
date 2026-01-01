@@ -1,0 +1,19 @@
+include "src/term"
+include "src/unify"
+
+: main ( -- )
+  "Testing basic unify" io.write-line
+
+  # Create two atoms
+  "foo" no-span tatom
+  "foo" no-span tatom
+
+  # Unify with empty subst
+  subst-empty unify
+
+  unify-ok? if
+    "SUCCESS: atoms unified" io.write-line
+  else
+    "FAIL: atoms did not unify" io.write-line
+  then
+;

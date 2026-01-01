@@ -1,0 +1,37 @@
+include "src/term"
+include "src/unify"
+
+: main ( -- )
+  "=== Testing unify with variable ===" io.write-line
+
+  # Create foo(bar) - a ground term
+  "bar" no-span tatom tl1 "foo" swap tcompound
+
+  # Create foo(X) with X having id 0
+  "X" 0 no-span tvar-at tl1 "foo" swap tcompound
+
+  # Unify them with empty subst
+  subst-empty unify
+
+  # Check result
+  dup unify-ok? if
+    "Unify succeeded!" io.write-line
+    unify-ok-subst
+
+    # Check if subst is empty
+    dup subst-empty? if
+      "Subst is empty" io.write-line
+    else
+      "Subst is not empty" io.write-line
+      dup subst-binding
+      dup binding-var-id
+      "Var ID: " swap int->string string.concat io.write-line
+      binding-value term-to-string
+      "Value: " swap string.concat io.write-line
+    then
+    drop
+  else
+    "Unify failed" io.write-line
+    drop
+  then
+;

@@ -1,0 +1,52 @@
+include "src/term"
+include "src/unify"
+include "src/solve"
+
+: main ( -- )
+  "=== Testing variable query ===" io.write-line
+
+  # Create database with foo(bar)
+  "bar" no-span tatom-at tl1 "foo" swap no-span tcompound-at
+  make-fact
+  db-empty db-cons
+  "Created database" io.write-line
+
+  # Create query foo(X) - using tvar-at directly
+  "X" 0 no-span tvar-at
+  "Var id: " over tvar-id int->string string.concat io.write-line
+  tl1 "foo" swap no-span tcompound-at
+
+  # Make goal list: [foo(X)]
+  gnull gcons
+
+  # Run query
+  over
+  run-query
+
+  "Query done" io.write-line
+
+  dup solve-success? if
+    "SUCCESS!" io.write-line
+    solve-success-subst
+    dup subst-empty? if
+      "Subst is empty" io.write-line
+    else
+      "Subst has bindings" io.write-line
+      dup subst-binding
+      dup binding-var-id
+      "Bound var id: " swap int->string string.concat io.write-line
+      binding-value
+      dup tatom? if
+        "Bound to atom: " swap tatom-name string.concat io.write-line
+      else
+        drop "Bound to non-atom" io.write-line
+      then
+    then
+    drop
+  else
+    "FAILURE" io.write-line
+    drop
+  then
+
+  drop  # drop db
+;

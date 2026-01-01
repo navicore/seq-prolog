@@ -1,0 +1,417 @@
+# Built-in Predicates for SeqProlog
+#
+# Handles special predicates that aren't defined in the clause database:
+# - true/0, fail/0
+# - =/2, \=/2 (unification)
+# - is/2 (arithmetic evaluation)
+# - Comparison: <, >, =<, >=, =:=, =\=
+
+include "term"
+include "unify"
+
+# ============================================
+# Built-in Detection
+# ============================================
+
+# Check if a term is a call to a built-in predicate
+: builtin? ( Term -- Bool )
+  dup tatom? if
+    dup tatom-name "true" string.equal? if drop true else
+    dup tatom-name "fail" string.equal? if drop true else
+    drop false
+    then then
+  else
+    dup tcompound? if
+      dup tcompound-functor
+      dup "=" string.equal? if drop drop true else
+      dup "\\=" string.equal? if drop drop true else
+      dup "is" string.equal? if drop drop true else
+      dup "<" string.equal? if drop drop true else
+      dup ">" string.equal? if drop drop true else
+      dup "=<" string.equal? if drop drop true else
+      dup ">=" string.equal? if drop drop true else
+      dup "=:=" string.equal? if drop drop true else
+      dup "=\\=" string.equal? if drop drop true else
+      drop drop false
+      then then then then then then then then then
+    else
+      drop false
+    then
+  then
+;
+
+# ============================================
+# Built-in Execution
+# ============================================
+
+# Execute a built-in, returns UnifyResult (success/fail with subst)
+: exec-builtin ( Term Subst -- UnifyResult )
+  over tatom? if
+    over tatom-name "true" string.equal? if
+      nip make-unify-ok
+    else
+      over tatom-name "fail" string.equal? if
+        drop drop make-unify-fail
+      else
+        drop drop make-unify-fail
+      then
+    then
+  else
+    over tcompound? if
+      over tcompound-functor
+      dup "=" string.equal? if
+        drop exec-unify
+      else
+        dup "\\=" string.equal? if
+          drop exec-not-unify
+        else
+          dup "is" string.equal? if
+            drop exec-is
+          else
+            dup "<" string.equal? if
+              drop exec-lt
+            else
+              dup ">" string.equal? if
+                drop exec-gt
+              else
+                dup "=<" string.equal? if
+                  drop exec-le
+                else
+                  dup ">=" string.equal? if
+                    drop exec-ge
+                  else
+                    dup "=:=" string.equal? if
+                      drop exec-arith-eq
+                    else
+                      dup "=\\=" string.equal? if
+                        drop exec-arith-neq
+                      else
+                        drop drop drop make-unify-fail
+                      then
+                    then
+                  then
+                then
+              then
+            then
+          then
+        then
+      then
+    else
+      drop drop make-unify-fail
+    then
+  then
+;
+
+# ============================================
+# Unification Built-ins
+# ============================================
+
+# X i.= Y: unify X and Y
+: exec-unify ( Term Subst -- UnifyResult )
+  over tcompound-args
+  dup tlcar            # first arg
+  swap tlcdr tlcar     # second arg
+  # Stack: Term Subst X Y
+  3 roll drop          # drop original Term
+  # Stack: Subst X Y
+  rot                  # Stack: X Y Subst
+  unify
+;
+
+# X \= Y: succeed if X and Y don't unify
+: exec-not-unify ( Term Subst -- UnifyResult )
+  dup                  # keep a copy of original Subst
+  # Stack: Term Subst Subst
+  rot tcompound-args   # get args from Term
+  # Stack: Subst Subst Args
+  dup tlcar swap tlcdr tlcar
+  # Stack: Subst Subst X Y
+  rot                  # Stack: Subst X Y Subst
+  unify
+  # Stack: Subst UnifyResult
+  dup unify-ok? if
+    drop drop make-unify-fail
+  else
+    drop make-unify-ok  # use original Subst
+  then
+;
+
+# ============================================
+# Arithmetic Evaluation
+# ============================================
+
+# X is Expr: evaluate Expr and unify with X
+: exec-is ( Term Subst -- UnifyResult )
+  over tcompound-args
+  dup tlcar            # X (result variable)
+  swap tlcdr tlcar     # Expr
+  2 pick               # subst
+
+  # Evaluate expression
+  eval-arith
+  # Stack: Term Subst X ArithResult
+
+  dup arith-err? if
+    drop drop drop drop make-unify-fail
+  else
+    # Convert to term and unify
+    dup arith-int? if
+      arith-int-value tint
+    else
+      arith-float-value tfloat
+    then
+    # Stack: Term Subst X result_term
+    # We need to unify X with result_term under Subst
+    3 roll drop  # drop original Term
+    # Stack: Subst X result_term
+    rot  # Stack: X result_term Subst
+    unify
+  then
+;
+
+# Evaluate arithmetic expression
+: eval-arith ( Term Subst -- ArithResult )
+  # First dereference if variable
+  deref
+
+  dup tint? if
+    tint-value make-arith-int
+  else
+    dup tfloat? if
+      tfloat-value make-arith-float
+    else
+      dup tcompound? if
+        eval-arith-compound
+      else
+        dup tatom? if
+          # Could be a named constant
+          drop "Not a number" make-arith-err
+        else
+          drop "Invalid arithmetic expression" make-arith-err
+        then
+      then
+    then
+  then
+;
+
+: eval-arith-compound ( Term Subst -- ArithResult )
+  over tcompound-functor
+  over tcompound-args
+  # Stack: term subst functor args
+
+  # Get both operands
+  dup tlcar 3 pick eval-arith
+  # Stack: term subst functor args r1
+  swap tlcdr dup tlnil? if
+    # Unary operation (only "-" supported)
+    drop
+    # Stack: term subst functor r1
+    over "-" string.equal? if
+      dup arith-err? if
+        nip nip nip
+      else
+        dup arith-int? if
+          arith-int-value 0 swap i.- make-arith-int nip nip nip
+        else
+          arith-float-value 0.0 swap f.- make-arith-float nip nip nip
+        then
+      then
+    else
+      drop drop drop drop "Unknown unary operator" make-arith-err
+    then
+  else
+    # Binary operation
+    tlcar 3 pick eval-arith
+    # Stack: term subst functor r1 r2
+
+    over arith-err? if
+      nip nip nip nip nip
+    else
+      dup arith-err? if
+        nip nip nip nip nip
+      else
+        # Check operator
+        3 pick "+" string.equal? if
+          eval-binary-add
+        else
+          3 pick "-" string.equal? if
+            eval-binary-sub
+          else
+            3 pick "*" string.equal? if
+              eval-binary-mul
+            else
+              3 pick "/" string.equal? if
+                eval-binary-div
+              else
+                3 pick "mod" string.equal? if
+                  eval-binary-mod
+                else
+                  drop drop drop drop drop "Unknown operator" make-arith-err
+                then
+              then
+            then
+          then
+        then
+      then
+    then
+  then
+;
+
+# Binary operation helpers
+# Stack before: term subst functor r1 r2
+# Stack after: ArithResult
+
+: eval-binary-add ( Term Subst String ArithResult ArithResult -- ArithResult )
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value i.+ make-arith-int
+    nip nip nip
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    f.+ make-arith-float
+    nip nip nip
+  then
+;
+
+: eval-binary-sub ( Term Subst String ArithResult ArithResult -- ArithResult )
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value i.- make-arith-int
+    nip nip nip
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    f.- make-arith-float
+    nip nip nip
+  then
+;
+
+: eval-binary-mul ( Term Subst String ArithResult ArithResult -- ArithResult )
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value i.* make-arith-int
+    nip nip nip
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    f.* make-arith-float
+    nip nip nip
+  then
+;
+
+: eval-binary-div ( Term Subst String ArithResult ArithResult -- ArithResult )
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value i./ make-arith-int
+    nip nip nip
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    f./ make-arith-float
+    nip nip nip
+  then
+;
+
+: eval-binary-mod ( Term Subst String ArithResult ArithResult -- ArithResult )
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value i.% make-arith-int
+    nip nip nip
+  else
+    drop drop drop drop drop "mod requires integers" make-arith-err
+  then
+;
+
+# ============================================
+# Comparison Built-ins
+# ============================================
+
+: exec-lt ( Term Subst -- UnifyResult )
+  exec-comparison [ i.< ] [ f.< ] ;
+
+: exec-gt ( Term Subst -- UnifyResult )
+  exec-comparison [ i.> ] [ f.> ] ;
+
+: exec-le ( Term Subst -- UnifyResult )
+  exec-comparison [ i.< not ] [ f.< not ] ;  # a =< b means not (a i.> b)
+
+: exec-ge ( Term Subst -- UnifyResult )
+  exec-comparison [ i.> not ] [ f.> not ] ;
+
+: exec-arith-eq ( Term Subst -- UnifyResult )
+  exec-comparison [ i.= ] [ f.= ] ;
+
+: exec-arith-neq ( Term Subst -- UnifyResult )
+  dup                  # save Subst
+  # Stack: Term Subst Subst
+  rot tcompound-args   # get args
+  # Stack: Subst Subst Args
+  dup tlcar rot eval-arith
+  # Stack: Subst Args r1
+  swap tlcdr tlcar rot eval-arith
+  # Stack: Subst r1 r2
+
+  over arith-err? if drop drop drop make-unify-fail else
+  dup arith-err? if drop drop drop make-unify-fail else
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value
+    # Stack: Subst v1 v2
+    i.= not if
+      drop drop make-unify-ok
+    else
+      drop drop drop make-unify-fail
+    then
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    # Stack: Subst fv1 fv2
+    f.= not if
+      drop drop make-unify-ok
+    else
+      drop drop drop make-unify-fail
+    then
+  then then then
+;
+
+: exec-comparison ( Term Subst Quot Quot -- UnifyResult )
+  # Drop quotations - we use hardcoded i.< for now
+  drop drop
+  # Stack: Term Subst
+  dup                  # save Subst
+  # Stack: Term Subst Subst
+  rot tcompound-args   # get args
+  # Stack: Subst Subst Args
+  dup tlcar rot eval-arith
+  # Stack: Subst Args r1
+  swap tlcdr tlcar rot eval-arith
+  # Stack: Subst r1 r2
+
+  over arith-err? if drop drop drop make-unify-fail else
+  dup arith-err? if drop drop drop make-unify-fail else
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value
+    # Stack: Subst v1 v2
+    i.< if
+      drop drop make-unify-ok
+    else
+      drop drop drop make-unify-fail
+    then
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    # Stack: Subst fv1 fv2
+    f.< if
+      drop drop make-unify-ok
+    else
+      drop drop drop make-unify-fail
+    then
+  then then then
+;

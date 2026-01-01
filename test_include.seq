@@ -1,0 +1,6 @@
+include "src/term"
+
+: main ( -- )
+  "test" tatom drop
+  "foo" io.write-line
+;
