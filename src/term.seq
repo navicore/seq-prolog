@@ -487,24 +487,48 @@ union Subst {
 # Choice Points for Backtracking
 # ============================================
 
-union ChoicePoint {
-  CP { goals: GoalList, clauses: ClauseDB, subst: Subst, var_counter: Int }
+# SolveState bundles subst and counter for choice points
+union SolveState {
+  SS { subst: Subst, counter: Int }
 }
 
-: make-cp ( GoalList ClauseDB Subst Int -- ChoicePoint )
-  Make-CP ;
+: make-solve-state ( Subst Int -- SolveState )
+  Make-SS ;
+
+: ss-subst ( SolveState -- Subst )
+  0 variant.field-at ;
+
+: ss-counter ( SolveState -- Int )
+  1 variant.field-at ;
+
+union ChoicePoint {
+  # goals: remaining goals to solve (goal::rest)
+  # matches: remaining clauses to try for current goal
+  # orig_db: full clause database for recursive solving
+  # state: subst and counter bundled together
+  CP { goals: GoalList, matches: ClauseDB, orig_db: ClauseDB, state: SolveState }
+}
+
+: make-cp ( GoalList ClauseDB ClauseDB Subst Int -- ChoicePoint )
+  make-solve-state Make-CP ;
 
 : cp-goals ( ChoicePoint -- GoalList )
   0 variant.field-at ;
 
-: cp-clauses ( ChoicePoint -- ClauseDB )
+: cp-matches ( ChoicePoint -- ClauseDB )
   1 variant.field-at ;
 
-: cp-subst ( ChoicePoint -- Subst )
+: cp-orig-db ( ChoicePoint -- ClauseDB )
   2 variant.field-at ;
 
-: cp-var-counter ( ChoicePoint -- Int )
+: cp-state ( ChoicePoint -- SolveState )
   3 variant.field-at ;
+
+: cp-subst ( ChoicePoint -- Subst )
+  cp-state ss-subst ;
+
+: cp-var-counter ( ChoicePoint -- Int )
+  cp-state ss-counter ;
 
 union ChoiceStack {
   CPNil
