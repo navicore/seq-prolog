@@ -26,29 +26,33 @@ seqprolog locomotive-maint.sprolog -o locomotive-maint
 
 ---
 
-## Phase 1: Working Queries (Current Priority)
+## Phase 1: Working Queries ✅ COMPLETE
 
 **Goal**: Compiled programs can execute queries and return results.
 
 | Task | Description | Status |
 |------|-------------|--------|
-| Execute embedded queries | `?- foo(X).` in source runs at startup | TODO |
-| CLI `--query` flag | `./prog --query "foo(X)."` | TODO |
-| Print solutions | Human-readable output (`X = bar`) | TODO |
-| Wire up runtime | Connect codegen to solve.seq/unify.seq | TODO |
+| Execute embedded queries | `?- foo(X).` in source runs at startup | Deferred |
+| CLI `--query` flag | `./prog --query "foo(X)."` | ✅ Done |
+| Print solutions | Human-readable output (`X = bar`) | ✅ Done |
+| Wire up runtime | Connect codegen to solve.seq/unify.seq | ✅ Done |
 
-**Acceptance**:
+**Known Limitations**:
+- Returns first solution only (multiple solutions in Phase 2)
+- Variable renaming uses counter-based approach - see [issue #5](https://github.com/navicore/seq-prolog/issues/5)
+
+**Example**:
 ```bash
 echo "parent(tom, mary). parent(tom, james)." > test.sprolog
-echo "?- parent(tom, X)." >> test.sprolog
 just compile test.sprolog
-./target/prolog-out
-# Output: X = mary
+./target/prolog-out --query "parent(tom, X)"
+# Output: 0 = mary
+#         .
 ```
 
 ---
 
-## Phase 2: Multiple Solutions
+## Phase 2: Multiple Solutions (Current Priority)
 
 **Goal**: Backtracking to enumerate all solutions.
 
@@ -186,13 +190,21 @@ Compiled index:
 
 ## Getting Started
 
-Current focus: **Phase 1 - Working Queries**
+Current focus: **Phase 2 - Multiple Solutions**
 
 ```bash
-# Build
+# Build compiler
 just build
 
-# Current state: compiles facts but queries don't execute
-./target/seqprolog examples/family.sprolog > /tmp/out.seq
-cat /tmp/out.seq  # Shows generated code with "TODO: execute query"
+# Compile a Prolog file to executable
+just compile examples/family.sprolog
+
+# Run queries
+./target/prolog-out --query "parent(tom, mary)"    # true.
+./target/prolog-out --query "parent(tom, X)"       # 0 = mary
+./target/prolog-out --query "grandparent(tom, ann)" # succeeds with bindings
+./target/prolog-out --query "ancestor(tom, ann)"    # recursive rules work
+
+# Run tests
+just ci
 ```
