@@ -1,0 +1,112 @@
+# Runtime Query Execution for Compiled SeqProlog Programs
+#
+# Provides query parsing and execution for compiled binaries.
+# Generated programs include this module and call run-cli-query.
+
+include "../parser"
+include "solve"
+
+# ============================================
+# Query Parsing
+# ============================================
+
+# Parse a query string into a GoalList
+# Returns gnull on parse error
+: parse-query-string ( String -- GoalList Bool )
+  # Tokenize the input
+  tokenize
+
+  # Parse as a term with fresh variable counter
+  0 parse-term-with-counter
+  drop  # drop counter
+
+  # Check if parse succeeded
+  dup parse-ok-term? if
+    parse-term-value
+    # Wrap single term as goal list
+    gnull gcons
+    true
+  else
+    drop gnull false
+  then
+;
+
+# ============================================
+# Result Printing (Prolog format)
+# ============================================
+
+# Print a substitution's variable bindings
+: print-bindings ( Subst -- )
+  dup subst-empty? if
+    drop "true." io.write-line
+  else
+    print-bindings-loop
+    "." io.write-line
+  then
+;
+
+: print-bindings-loop ( Subst -- )
+  dup subst-empty? if
+    drop
+  else
+    dup subst-binding
+    dup binding-var-id int->string
+    " = " string.concat
+    swap binding-value term-to-string string.concat
+    io.write-line
+    subst-parent print-bindings-loop
+  then
+;
+
+# Print solve result in Prolog format
+: print-solve-result ( SolveResult -- )
+  dup solve-success? if
+    solve-success-subst print-bindings
+  else
+    dup solve-failure? if
+      drop "false." io.write-line
+    else
+      "Error: " swap solve-error-message string.concat io.write-line
+    then
+  then
+;
+
+# ============================================
+# CLI Interface
+# ============================================
+
+# Run a query from command line arguments
+# Usage: ./prog --query "goal(X, Y)"
+: run-cli-query ( ClauseDB -- )
+  # Check for --query flag with argument
+  args.count 3 i.>=
+  1 args.at "--query" string.equal? and if
+    2 args.at
+    # Stack: ClauseDB query-string
+    swap run-query-from-string
+  else
+    # Any other invocation prints usage (including --help, -h, or no args)
+    drop print-query-usage
+  then
+;
+
+# Execute a query string against a clause database
+: run-query-from-string ( String ClauseDB -- )
+  swap parse-query-string
+  # Stack: ClauseDB GoalList success?
+  if
+    # Stack: ClauseDB GoalList
+    swap run-query
+    print-solve-result
+  else
+    drop drop "Error: Failed to parse query" io.write-line
+  then
+;
+
+: print-query-usage ( -- )
+  "Usage: <program> --query \"goal(X, Y)\"" io.write-line
+  "" io.write-line
+  "Options:" io.write-line
+  "  --query <query>  Execute a Prolog query" io.write-line
+  "  --help, -h       Show this help" io.write-line
+;

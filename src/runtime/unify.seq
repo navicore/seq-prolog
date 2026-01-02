@@ -92,15 +92,21 @@ include "../term"
   else
     # t1 is variable?
     2 pick tvar? if
-      # Skip occurs check for now, just bind
-      rot
-      tvar-id
-      rot rot subst-bind make-unify-ok
+      # Occurs check: check if t1's id occurs in t2
+      # Stack: t1 t2 subst
+      2 pick tvar-id 2 pick 2 pick occurs-in? if
+        drop drop drop make-unify-fail
+      else
+        # Bind t1 to t2
+        rot tvar-id rot rot subst-bind make-unify-ok
+      then
     else
       # t2 is variable?
       over tvar? if
-        # Occurs check
-        over tvar-id 2 pick 2 pick occurs-in? if
+        # Occurs check: check if t2's id occurs in t1
+        # Stack: t1 t2 subst
+        over tvar-id 3 pick 2 pick occurs-in? if
+          # Stack after occurs-in?: t1 t2 subst (with t2's id consumed)
           drop drop drop make-unify-fail
         else
           # Bind t2 to t1

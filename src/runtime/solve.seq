@@ -8,33 +8,67 @@ include "unify"
 include "../builtins"
 
 # ============================================
-# Variable Renaming
+# Variable Renaming (Simple counter-based)
 # ============================================
+# KNOWN LIMITATION: Uses simple counter-based renaming.
+# Same-named variables in clause head and body get different IDs.
+# This works for simple cases but breaks proper Prolog semantics.
+# Example: In `foo(X) :- bar(X)`, head X and body X should share IDs.
+# See: https://github.com/navicore/seq-prolog/issues/5
+
+: rename-var ( Term Int -- Term Int )
+  # Input: var counter
+  # Output: new-var counter+1
+  # Stack: var counter
+  dup                    # var counter counter
+  1 i.+                  # var counter counter+1
+  rot                    # counter counter+1 var
+  tvar-name              # counter counter+1 "name"
+  rot                    # counter+1 "name" counter
+  no-span tvar-at        # counter+1 new-var
+  swap                   # new-var counter+1
+;
 
 : rename-term ( Term Int -- Term Int )
   over tvar? if
-    # Stack: term counter
-    over tvar-name over no-span tvar-at
-    # Stack: term counter new_var
-    rot drop swap 1 i.+  # drop old term, increment counter
-    # Stack: new_var (counter+1)
+    rename-var
   else
     over tcompound? if
-      over tcompound-args over rename-termlist
-      rot drop
-      swap rot tcompound-functor swap
-      no-span tcompound-at swap
+      # Compound - get functor first, then rename args
+      # Stack: term counter
+      over tcompound-functor    # Stack: term counter functor
+      2 pick tcompound-args     # Stack: term counter functor args
+      2 pick                    # Stack: term counter functor args counter (depth: 0=args,1=functor,2=counter,3=term)
+      rename-termlist           # Stack: term counter functor renamed-args counter2
+      # Create new compound: need functor renamed-args no-span
+      2 pick                    # Stack: ... functor renamed-args counter2 functor
+      2 pick                    # Stack: ... functor renamed-args counter2 functor renamed-args
+      no-span tcompound-at      # Stack: term counter functor renamed-args counter2 new-compound
+      # Clean up: keep new-compound and counter2
+      5 roll drop               # drop term
+      4 roll drop               # drop counter
+      rot drop                  # drop functor
+      rot drop                  # drop renamed-args
+      swap                      # Stack: new-compound counter2
     else
       over tlist? if
-        # Stack: term counter
+        # List - rename head and tail
         over tlist-head over rename-term
-        # Stack: term counter renamed-head new-counter
-        # Indices: 0=new-counter 1=renamed-head 2=counter 3=term
-        3 pick tlist-tail over rename-term
-        # Stack: term counter renamed-head new-counter renamed-tail final-counter
-        rot drop
-        swap no-span tlist-at
-        nip nip swap
+        # Stack: term counter head2 counter2
+        3 pick tlist-tail       # Stack: term counter head2 counter2 tail
+        over                    # Stack: term counter head2 counter2 tail counter2
+        rename-term             # Stack: term counter head2 counter2 tail2 counter3
+        # Create new list: need head2 tail2 no-span
+        3 pick                  # Stack: ... counter2 tail2 counter3 head2
+        2 pick                  # Stack: ... counter2 tail2 counter3 head2 tail2
+        no-span tlist-at        # Stack: term counter head2 counter2 tail2 counter3 new-list
+        # Clean up: keep new-list and counter3
+        6 roll drop             # drop term
+        5 roll drop             # drop counter
+        4 roll drop             # drop head2
+        rot drop                # drop counter2
+        rot drop                # drop tail2
+        swap                    # Stack: new-list counter3
       else
         # Atom/int/float unchanged
       then
@@ -45,62 +79,63 @@ include "../builtins"
 : rename-termlist ( TermList Int -- TermList Int )
   over tlnil? if
   else
-    # Stack: list counter
     over tlcar over rename-term
-    # Stack: list counter renamed-car new-counter
-    # Indices: 0=new-counter 1=renamed-car 2=counter 3=list
-    3 pick tlcdr over rename-termlist
-    # Stack: list counter renamed-car new-counter renamed-cdr final-counter
-    # Indices: 0=final-counter 1=renamed-cdr 2=new-counter 3=renamed-car 4=counter 5=list
-    rot drop
-    # Stack: list counter renamed-car renamed-cdr final-counter
-    # Need tlcons(renamed-car, renamed-cdr), keep final-counter
-    rot rot tlcons        # rot rot puts car/cdr in right order for tlcons
-    # Stack: list counter final-counter new-list
-    rot drop              # bring counter to top and drop it: list final-counter new-list
-    rot drop              # bring list to top and drop it: final-counter new-list
-    swap                  # new-list final-counter
+    # Stack: list counter car2 counter2
+    3 pick tlcdr                # Stack: list counter car2 counter2 cdr
+    over                        # Stack: list counter car2 counter2 cdr counter2
+    rename-termlist             # Stack: list counter car2 counter2 cdr2 counter3
+    # Create new cons: need car2 cdr2
+    3 pick                      # Stack: ... counter2 cdr2 counter3 car2
+    2 pick                      # Stack: ... counter2 cdr2 counter3 car2 cdr2
+    tlcons                      # Stack: list counter car2 counter2 cdr2 counter3 new-list
+    # Clean up: keep new-list and counter3
+    6 roll drop                 # drop list
+    5 roll drop                 # drop counter
+    4 roll drop                 # drop car2
+    rot drop                    # drop counter2
+    rot drop                    # drop cdr2
+    swap                        # Stack: new-list counter3
   then
 ;
 
 : rename-clause ( Clause Int -- Clause Int )
-  # Stack: clause counter
   over clause-head over rename-term
-  # Stack: clause counter renamed-head new-counter
-  # Indices: 0=new-counter 1=renamed-head 2=counter 3=clause
-  3 pick clause-body over rename-goals
-  # Stack: clause counter renamed-head new-counter renamed-body final-counter
-  # Indices: 0=final-counter 1=renamed-body 2=new-counter 3=renamed-head 4=counter 5=clause
-  # We need to call make-clause(renamed-head, renamed-body) and keep final-counter
-  rot drop            # drop new-counter: clause counter renamed-head renamed-body final-counter
-  rot                 # clause counter renamed-body final-counter renamed-head
-  rot                 # clause counter final-counter renamed-head renamed-body
-  make-clause         # clause counter final-counter renamed-clause
-  rot                 # clause final-counter renamed-clause counter
-  drop                # clause final-counter renamed-clause
-  rot                 # final-counter renamed-clause clause
-  drop                # final-counter renamed-clause
-  swap                # renamed-clause final-counter
+  # Stack: clause counter head2 counter2
+  3 pick clause-body            # Stack: clause counter head2 counter2 body
+  over                          # Stack: clause counter head2 counter2 body counter2
+  rename-goals                  # Stack: clause counter head2 counter2 body2 counter3
+  # Create new clause: need head2 body2
+  3 pick                        # Stack: ... counter2 body2 counter3 head2
+  2 pick                        # Stack: ... counter2 body2 counter3 head2 body2
+  make-clause                   # Stack: clause counter head2 counter2 body2 counter3 new-clause
+  # Clean up: keep new-clause and counter3
+  6 roll drop                   # drop clause
+  5 roll drop                   # drop counter
+  4 roll drop                   # drop head2
+  rot drop                      # drop counter2
+  rot drop                      # drop body2
+  swap                          # Stack: new-clause counter3
 ;
 
 : rename-goals ( GoalList Int -- GoalList Int )
   over gnull? if
   else
-    # Stack: goals counter
     over gcar over rename-term
-    # Stack: goals counter renamed-goal new-counter
-    # Indices: 0=new-counter 1=renamed-goal 2=counter 3=goals
-    3 pick gcdr over rename-goals
-    # Stack: goals counter renamed-goal new-counter renamed-rest final-counter
-    # Indices: 0=final-counter 1=renamed-rest 2=new-counter 3=renamed-goal 4=counter 5=goals
-    rot drop
-    # Stack: goals counter renamed-goal renamed-rest final-counter
-    # Need gcons(renamed-goal, renamed-rest), keep final-counter
-    rot rot gcons         # rot rot puts goal/rest in right order for gcons
-    # Stack: goals counter final-counter new-goals
-    rot drop              # bring counter to top and drop it: goals final-counter new-goals
-    rot drop              # bring goals to top and drop it: final-counter new-goals
-    swap                  # new-goals final-counter
+    # Stack: goals counter goal2 counter2
+    3 pick gcdr                 # Stack: goals counter goal2 counter2 rest
+    over                        # Stack: goals counter goal2 counter2 rest counter2
+    rename-goals                # Stack: goals counter goal2 counter2 rest2 counter3
+    # Create new gcons: need goal2 rest2
+    3 pick                      # Stack: ... counter2 rest2 counter3 goal2
+    2 pick                      # Stack: ... counter2 rest2 counter3 goal2 rest2
+    gcons                       # Stack: goals counter goal2 counter2 rest2 counter3 new-goals
+    # Clean up: keep new-goals and counter3
+    6 roll drop                 # drop goals
+    5 roll drop                 # drop counter
+    4 roll drop                 # drop goal2
+    rot drop                    # drop counter2
+    rot drop                    # drop rest2
+    swap                        # Stack: new-goals counter3
   then
 ;
 
