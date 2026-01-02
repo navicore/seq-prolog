@@ -78,30 +78,15 @@ include "solve"
 # Run a query from command line arguments
 # Usage: ./prog --query "goal(X, Y)"
 : run-cli-query ( ClauseDB -- )
-  args.count 3 i.>= if
-    1 args.at "--query" string.equal? if
-      2 args.at
-      # Stack: ClauseDB query-string
-      swap run-query-from-string
-    else
-      1 args.at "--help" string.equal?
-      1 args.at "-h" string.equal? or if
-        drop print-query-usage
-      else
-        drop print-query-usage
-      then
-    then
+  # Check for --query flag with argument
+  args.count 3 i.>=
+  1 args.at "--query" string.equal? and if
+    2 args.at
+    # Stack: ClauseDB query-string
+    swap run-query-from-string
   else
-    args.count 2 i.>= if
-      1 args.at "--help" string.equal?
-      1 args.at "-h" string.equal? or if
-        drop print-query-usage
-      else
-        drop print-query-usage
-      then
-    else
-      drop print-query-usage
-    then
+    # Any other invocation prints usage (including --help, -h, or no args)
+    drop print-query-usage
   then
 ;
 

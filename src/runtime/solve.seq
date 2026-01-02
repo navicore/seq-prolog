@@ -10,9 +10,11 @@ include "../builtins"
 # ============================================
 # Variable Renaming (Simple counter-based)
 # ============================================
-# For now, use simple counter-based renaming without VarMap.
-# This means same-named variables in head/body will get different IDs.
-# TODO: Add VarMap-based renaming for correct variable sharing.
+# KNOWN LIMITATION: Uses simple counter-based renaming.
+# Same-named variables in clause head and body get different IDs.
+# This works for simple cases but breaks proper Prolog semantics.
+# Example: In `foo(X) :- bar(X)`, head X and body X should share IDs.
+# See: https://github.com/navicore/seq-prolog/issues/5
 
 : rename-var ( Term Int -- Term Int )
   # Input: var counter

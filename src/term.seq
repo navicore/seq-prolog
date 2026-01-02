@@ -484,48 +484,6 @@ union Subst {
 ;
 
 # ============================================
-# Variable Name Map (for parsing)
-# ============================================
-
-# Maps variable names to IDs within a clause
-union VarMap {
-  VMEmpty
-  VMEntry { name: String, id: Int, rest: VarMap }
-}
-
-: vm-empty ( -- VarMap )
-  Make-VMEmpty ;
-
-: vm-extend ( String Int VarMap -- VarMap )
-  Make-VMEntry ;
-
-: vm-empty? ( VarMap -- Bool )
-  variant.tag 0 i.= ;
-
-: vm-name ( VarMap -- String )
-  0 variant.field-at ;
-
-: vm-id ( VarMap -- Int )
-  1 variant.field-at ;
-
-: vm-rest ( VarMap -- VarMap )
-  2 variant.field-at ;
-
-# Lookup variable name in map, returns (id found?)
-# found? is on top for easy use with if
-: vm-lookup ( String VarMap -- Int Bool )
-  dup vm-empty? if
-    drop drop 0 false
-  else
-    dup vm-name 2 pick string.equal? if
-      vm-id nip nip swap true
-    else
-      vm-rest vm-lookup
-    then
-  then
-;
-
-# ============================================
 # Choice Points for Backtracking
 # ============================================
 

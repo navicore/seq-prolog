@@ -180,8 +180,12 @@ compile-test: build
     fi
     echo "All compiler integration tests passed!"
 
-# Full CI: test + build + prolog-test + compile-test
-ci: test build prolog-test compile-test
+# Run query execution integration tests
+query-test: build
+    @bash tests/prolog/test_queries.sh
+
+# Full CI: test + build + prolog-test + compile-test + query-test
+ci: test build prolog-test compile-test query-test
     @echo "CI passed!"
 
 # Safe eval - for testing expressions with bounded output
