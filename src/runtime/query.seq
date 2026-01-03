@@ -58,7 +58,7 @@ include "solve"
   then
 ;
 
-# Print solve result in Prolog format
+# Print solve result in Prolog format (single solution)
 : print-solve-result ( SolveResult -- )
   dup solve-success? if
     solve-success-subst print-bindings
@@ -67,6 +67,43 @@ include "solve"
       drop "false." io.write-line
     else
       "Error: " swap solve-error-message string.concat io.write-line
+    then
+  then
+;
+
+# Print all solutions by following choice points
+: print-all-solutions ( SolveResult ClauseDB -- )
+  over solve-success? if
+    # Print this solution
+    over solve-success-subst print-bindings
+
+    # Check for more solutions via choice points
+    over solve-success-cp-stack
+    # Stack: result db cp_stack
+    dup cpnil? if
+      # No more choice points
+      drop drop drop "false." io.write-line
+    else
+      # Has choice points - get next solution
+      over solve-next
+      # Stack: result db cp_stack next_result
+
+      nip        # drop cp_stack
+      rot drop   # drop old result
+      # Stack: db next_result
+      swap       # Stack: next_result db
+
+      # Recurse
+      print-all-solutions
+    then
+  else
+    over solve-failure? if
+      # No more solutions
+      drop drop "false." io.write-line
+    else
+      # Error
+      swap "Error: " swap solve-error-message string.concat io.write-line
+      drop
     then
   then
 ;
@@ -96,8 +133,10 @@ include "solve"
   # Stack: ClauseDB GoalList success?
   if
     # Stack: ClauseDB GoalList
-    swap run-query
-    print-solve-result
+    over swap          # Stack: ClauseDB ClauseDB GoalList
+    swap run-query-all # Stack: ClauseDB SolveResult
+    swap               # Stack: SolveResult ClauseDB
+    print-all-solutions
   else
     drop drop "Error: Failed to parse query" io.write-line
   then
