@@ -149,8 +149,62 @@ run_test "Simple atom query" \
     "likes(mary, wine)" \
     "true\."
 
-# Clean up temp file
-rm -f /tmp/test_nested.sprolog
+# === Regression Tests for solve-next pick index bugs (PR #6) ===
+# These tests catch bugs where incorrect stack indices in solve-next
+# caused crashes when enumerating multiple solutions.
+# Bug: 6 pick → 5 pick (rest_goals), 8 pick → 10 pick (untried_clauses)
+
+# Create test file with multiple matching clauses
+cat > /tmp/test_multisol.sprolog << 'MULTISOL'
+parent(tom, mary).
+parent(tom, james).
+parent(tom, ann).
+parent(mary, bob).
+MULTISOL
+
+# Test 14: Multiple solutions enumeration (regression for solve-next pick bugs)
+# This query should return multiple solutions without crashing
+just compile "/tmp/test_multisol.sprolog" > /dev/null 2>&1
+result=$(./target/prolog-out --query "parent(tom, X)" 2>&1) || true
+# Should contain all three children: mary, james, ann (as variable bindings)
+if echo "$result" | grep -q "mary" && echo "$result" | grep -q "james" && echo "$result" | grep -q "ann"; then
+    echo "PASS: Multiple solutions enumeration"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: Multiple solutions enumeration"
+    echo "  Query: parent(tom, X)"
+    echo "  Expected: bindings for mary, james, and ann"
+    echo "  Got: $result"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test 15: Choice point exhaustion ends with false
+# After all solutions, the final line should be "false."
+if echo "$result" | grep -q "false\."; then
+    echo "PASS: Choice point exhaustion (ends with false)"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: Choice point exhaustion (ends with false)"
+    echo "  Expected: output to end with 'false.'"
+    echo "  Got: $result"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test 16: Single solution case still works
+result=$(./target/prolog-out --query "parent(mary, X)" 2>&1) || true
+if echo "$result" | grep -q "bob"; then
+    echo "PASS: Single solution case"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: Single solution case"
+    echo "  Query: parent(mary, X)"
+    echo "  Expected: binding for bob"
+    echo "  Got: $result"
+    FAIL=$((FAIL + 1))
+fi
+
+# Clean up temp files
+rm -f /tmp/test_nested.sprolog /tmp/test_multisol.sprolog
 
 echo ""
 echo "=== Results ==="

@@ -509,6 +509,22 @@ include "../builtins"
 
 # Continue solving from a choice point
 # Returns next solution or failure if exhausted
+#
+# WARNING: Stack Manipulation Fragility
+# =====================================
+# This function uses complex index-based stack picking to arrange arguments
+# for try-clauses-with-cp. The indices were carefully calculated and bugs
+# at lines 562/564 (pick indices) caused crashes that were difficult to diagnose.
+#
+# If modifying this function:
+# 1. Trace the full stack state after each operation
+# 2. Remember that each 'pick' shifts all indices by +1
+# 3. Use the inline comments tracking indices as a guide
+# 4. Test with both single-clause and multi-clause databases
+#
+# Future refactoring: Consider extracting helper functions to reduce
+# stack depth and improve maintainability.
+#
 : solve-next ( ChoiceStack ClauseDB -- SolveResult )
   over cpnil? if
     # No more choice points - exhausted
@@ -524,35 +540,35 @@ include "../builtins"
     # Stack: db cp rest_cp_stack
     # indices: 0=rest_cp_stack 1=cp 2=db
 
-    # Get goals, matches, subst, counter from cp
+    # Get goals, untried clauses, subst, counter from cp
     over cp-goals          # db cp rest_cp goals (cp is at index 2 now)
     # indices: 0=goals 1=rest_cp 2=cp 3=db
 
-    2 pick cp-matches      # cp is at index 2 -> db cp rest_cp goals matches
-    # indices: 0=matches 1=goals 2=rest_cp 3=cp 4=db
+    2 pick cp-untried-clauses  # cp is at index 2 -> db cp rest_cp goals untried
+    # indices: 0=untried 1=goals 2=rest_cp 3=cp 4=db
 
-    3 pick cp-subst        # cp at index 3 -> ... goals matches subst
-    # indices: 0=subst 1=matches 2=goals 3=rest_cp 4=cp 5=db
+    3 pick cp-subst        # cp at index 3 -> ... goals untried subst
+    # indices: 0=subst 1=untried 2=goals 3=rest_cp 4=cp 5=db
     4 pick cp-var-counter  # cp is now at index 4
-    # Stack: db cp rest_cp goals matches subst counter
+    # Stack: db cp rest_cp goals untried subst counter
 
     # Split goals into goal and rest_goals
     3 pick gcar            # goal (goals at index 3)
     4 pick gcdr            # rest_goals (goals at index 4)
-    # Stack: db cp rest_cp goals matches subst counter goal rest_goals
-    # indices: 0=rest_goals 1=goal 2=counter 3=subst 4=matches 5=goals 6=rest_cp 7=cp 8=db
+    # Stack: db cp rest_cp goals untried subst counter goal rest_goals
+    # indices: 0=rest_goals 1=goal 2=counter 3=subst 4=untried 5=goals 6=rest_cp 7=cp 8=db
 
     # For try-clauses-with-cp we need:
     # ( GoalList ClauseDB Subst Int Term GoalList ClauseDB -- SolveResult )
-    # That's: goals db subst counter goal rest_goals matches
+    # That's: goals db subst counter goal rest_goals untried_clauses
 
-    # Current stack: db cp rest_cp goals matches subst counter goal rest_goals
-    # indices: 0=rest_goals 1=goal 2=counter 3=subst 4=matches 5=goals 6=rest_cp 7=cp 8=db
+    # Current stack: db cp rest_cp goals untried subst counter goal rest_goals
+    # indices: 0=rest_goals 1=goal 2=counter 3=subst 4=untried 5=goals 6=rest_cp 7=cp 8=db
 
     5 pick                 # goals (at 5)
-    # 0=goals 1=rest_goals 2=goal 3=counter 4=subst 5=matches 6=goals 7=rest_cp 8=cp 9=db
+    # 0=goals 1=rest_goals 2=goal 3=counter 4=subst 5=untried 6=goals 7=rest_cp 8=cp 9=db
     9 pick                 # db (at 9)
-    # 0=db 1=goals 2=rest_goals 3=goal 4=counter 5=subst 6=matches ...
+    # 0=db 1=goals 2=rest_goals 3=goal 4=counter 5=subst 6=untried ...
     5 pick                 # subst (at 5)
     # 0=subst 1=db 2=goals 3=rest_goals 4=goal 5=counter 6=subst ...
     5 pick                 # counter (at 5)
@@ -561,11 +577,11 @@ include "../builtins"
     # 0=goal 1=counter 2=subst 3=db 4=goals 5=rest_goals 6=goal ...
     5 pick                 # rest_goals (was at 0, +5 pushes = 5)
     # 0=rest_goals 1=goal 2=counter 3=subst 4=db 5=goals 6=rest_goals 7=goal ...
-    10 pick                # matches (was at 4, +6 pushes = 10)
-    # Stack has: (orig) + goals db subst counter goal rest_goals matches
+    10 pick                # untried_clauses (was at 4, +6 pushes = 10)
+    # Stack has: (orig) + goals db subst counter goal rest_goals untried
 
     try-clauses-with-cp
-    # Stack: db cp rest_cp goals matches subst counter goal rest_goals result
+    # Stack: db cp rest_cp goals untried subst counter goal rest_goals result
 
     # Clean up the intermediate values (9 items before result)
     nip nip nip nip nip nip nip nip nip

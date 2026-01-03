@@ -502,23 +502,30 @@ union SolveState {
   1 variant.field-at ;
 
 union ChoicePoint {
-  # goals: remaining goals to solve (goal::rest)
-  # matches: remaining clauses to try for current goal
-  # orig_db: full clause database for recursive solving
-  # state: subst and counter bundled together
-  CP { goals: GoalList, matches: ClauseDB, orig_db: ClauseDB, state: SolveState }
+  # Choice point for backtracking - saves state to try alternative clauses
+  #
+  # Fields:
+  #   goals: The goal list we're trying to solve (goal::rest format)
+  #   untried_clauses: Remaining clauses to try for the current goal
+  #                    (excludes the clause we already tried successfully)
+  #   full_db: Complete clause database for recursive solving
+  #   state: Substitution and variable counter bundled together
+  CP { goals: GoalList, untried_clauses: ClauseDB, full_db: ClauseDB, state: SolveState }
 }
 
 : make-cp ( GoalList ClauseDB ClauseDB Subst Int -- ChoicePoint )
+  # Args: goals, untried_clauses, full_db, subst, counter
   make-solve-state Make-CP ;
 
 : cp-goals ( ChoicePoint -- GoalList )
   0 variant.field-at ;
 
-: cp-matches ( ChoicePoint -- ClauseDB )
+: cp-untried-clauses ( ChoicePoint -- ClauseDB )
+  # Returns the clauses we haven't tried yet for this goal
   1 variant.field-at ;
 
-: cp-orig-db ( ChoicePoint -- ClauseDB )
+: cp-full-db ( ChoicePoint -- ClauseDB )
+  # Returns the complete clause database (for recursive solving)
   2 variant.field-at ;
 
 : cp-state ( ChoicePoint -- SolveState )
