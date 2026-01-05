@@ -336,255 +336,318 @@ include "../builtins"
 # ============================================
 # Multi-Solution Solver (with choice points)
 # ============================================
+#
+# DESIGN: Forward-passing choice points for proper tail recursion
+# ===============================================================
+#
+# The key insight is that choice points are created BEFORE recursing,
+# not after. This allows all recursion to be proper tail calls.
+#
+# - solve-goals-with-cp takes a pending ChoiceStack parameter
+# - When goals are empty: return success with accumulated choices
+# - When trying clauses: create CP first, then tail-call
+# - On failure (no matches): pop from pending stack and backtrack (tail call)
+# - On unify failure: try next clause (simple tail recursion)
+#
+# This eliminates the mutual recursion that was breaking TCO.
 
-# Solve with choice point tracking
+# Entry point - start with empty pending choice stack
 : solve-all ( GoalList ClauseDB Subst Int -- SolveResult )
-  solve-goals-with-cp
+  cpnil solve-goals-with-cp
 ;
 
-: solve-goals-with-cp ( GoalList ClauseDB Subst Int -- SolveResult )
-  # Stack: goals db subst counter
-  3 pick gnull? if
-    # No goals - success with empty choice stack
-    # Stack: goals db subst counter
-    # Need: subst cpnil counter for make-solve-success
-    rot drop rot drop cpnil swap make-solve-success
+# Main solver with forward-passed choice stack
+# ChoiceStack contains pending choices to include on success / backtrack from on failure
+: solve-goals-with-cp ( GoalList ClauseDB Subst Int ChoiceStack -- SolveResult )
+  # Stack: goals db subst counter pending_cp
+  # Indices: 0=pending_cp 1=counter 2=subst 3=db 4=goals
+  4 pick gnull? if
+    # No goals - success with accumulated choice stack
+    # Stack: goals db subst counter pending_cp (5 items)
+    # Indices: 0=pending_cp 1=counter 2=subst 3=db 4=goals
+    # make-solve-success expects ( Subst ChoiceStack Int -- SolveResult )
+    # After each pick, indices shift by 1
+    2 pick         # subst (at 2) -> stack now 6 items: 0=subst, 1=pending_cp, 2=counter
+    1 pick         # pending_cp (at 1) -> stack now 7 items
+    3 pick         # counter (at 3) -> stack now 8 items
+    # Stack: goals db subst counter pending_cp subst pending_cp counter (8 items)
+    make-solve-success
+    # make-solve-success consumes 3 items, pushes 1 result
+    # Stack: goals db subst counter pending_cp result (6 items)
+    # Clean up: nip removes items from below result, need to remove 5 items
+    nip nip nip nip nip
   else
     # Get first goal and remaining goals
-    3 pick gcar     # goal
-    4 pick gcdr     # rest
-    # Stack: goals db subst counter goal rest
+    4 pick gcar     # goal
+    5 pick gcdr     # rest
+    # Stack: goals db subst counter pending_cp goal rest
 
     # Check if goal is a built-in
     over builtin? if
       # Handle builtin (no choice points for builtins)
-      solve-builtin-goal
+      solve-builtin-goal-with-cp
     else
       # Find matching clauses
-      over 5 pick matching-clauses
-      # Stack: goals db subst counter goal rest matches
+      over 6 pick matching-clauses
+      # Stack: goals db subst counter pending_cp goal rest matches
+      dup db-empty? if
+        # No matching clauses - need to backtrack
+        drop drop drop  # matches, rest, goal
+        # Stack: goals db subst counter pending_cp
+        backtrack-with-cp
+      else
+        # Has matching clauses - try them
+        try-clauses-with-cp
+      then
+    then
+  then
+;
+
+# Handle built-in goal with choice point passing
+# Stack: goals db subst counter pending_cp goal rest
+: solve-builtin-goal-with-cp ( GoalList ClauseDB Subst Int ChoiceStack Term GoalList -- SolveResult )
+  # Execute built-in with goal and current subst
+  over    # goal
+  5 pick  # subst
+  exec-builtin
+  # Stack: goals db subst counter pending_cp goal rest result
+
+  dup unify-ok? if
+    unify-ok-subst
+    # Stack: goals db subst counter pending_cp goal rest new_subst
+
+    # Clean up and continue with rest goals
+    rot drop    # drop goal
+    6 roll drop # drop old goals
+    # Stack: db subst counter pending_cp rest new_subst
+
+    4 roll drop  # drop old subst
+    # Stack: db counter pending_cp rest new_subst
+
+    # Reorder for recursive call: rest db new_subst counter pending_cp
+    3 roll      # Stack: db pending_cp rest new_subst counter
+    4 roll      # Stack: pending_cp rest new_subst counter db
+    4 roll      # Stack: rest new_subst counter db pending_cp
+    4 roll      # Stack: new_subst counter db pending_cp rest
+    4 roll      # Stack: counter db pending_cp rest new_subst
+    rot         # Stack: counter db rest new_subst pending_cp
+    4 roll      # Stack: db rest new_subst pending_cp counter
+    swap        # Stack: db rest new_subst counter pending_cp
+    3 roll      # Stack: db new_subst counter pending_cp rest
+    4 roll      # Stack: new_subst counter pending_cp rest db
+    4 roll      # Stack: counter pending_cp rest db new_subst
+    3 roll      # Stack: pending_cp rest db new_subst counter
+    4 roll      # Stack: rest db new_subst counter pending_cp
+
+    # Now: rest db new_subst counter pending_cp - tail call
+    solve-goals-with-cp
+  else
+    # Built-in failed - need to backtrack
+    drop drop drop  # result, rest, goal
+    # Stack: goals db subst counter pending_cp
+    backtrack-with-cp
+  then
+;
+
+# Backtrack by popping from choice stack
+# Stack: goals db subst counter pending_cp
+: backtrack-with-cp ( GoalList ClauseDB Subst Int ChoiceStack -- SolveResult )
+  # Stack: goals db subst counter pending_cp
+  dup cpnil? if
+    # No more choice points - true failure
+    drop drop drop drop drop
+    make-solve-failure
+  else
+    # Pop choice point from pending_cp
+    # Stack: goals db subst counter pending_cp
+    dup cpcar       # pending_cp cp
+    swap cpcdr      # cp rest_pending
+    # Stack: goals db subst counter cp rest_pending
+
+    # Drop old values we don't need (goals db subst counter)
+    # Stack: goals db subst counter cp rest_pending
+    # Indices: 0=rest_pending 1=cp 2=counter 3=subst 4=db 5=goals
+    5 roll drop     # drop goals: db subst counter cp rest_pending
+    4 roll drop     # drop db: subst counter cp rest_pending
+    3 roll drop     # drop subst: counter cp rest_pending
+    rot drop        # drop counter: cp rest_pending
+    # Stack: cp rest_pending
+
+    # Extract all fields from cp
+    over cp-goals               # cp rest_pending cp_goals
+    2 pick cp-untried-clauses   # cp rest_pending cp_goals untried
+    3 pick cp-full-db           # cp rest_pending cp_goals untried cp_db
+    4 pick cp-subst             # cp rest_pending cp_goals untried cp_db cp_subst
+    5 pick cp-var-counter       # cp rest_pending cp_goals untried cp_db cp_subst cp_counter
+    # Stack: cp rest_pending cp_goals untried cp_db cp_subst cp_counter
+    # Indices: 0=cp_counter 1=cp_subst 2=cp_db 3=untried 4=cp_goals 5=rest_pending 6=cp
+
+    # Drop cp (we've extracted what we need)
+    6 roll drop
+    # Stack: rest_pending cp_goals untried cp_db cp_subst cp_counter
+    # Indices: 0=cp_counter 1=cp_subst 2=cp_db 3=untried 4=cp_goals 5=rest_pending
+
+    # Get goal and rest from cp_goals
+    4 pick gcar     # ... cp_goal
+    5 pick gcdr     # ... cp_goal cp_rest
+    # Stack: rest_pending cp_goals untried cp_db cp_subst cp_counter cp_goal cp_rest
+    # Indices: 0=cp_rest 1=cp_goal 2=cp_counter 3=cp_subst 4=cp_db 5=untried 6=cp_goals 7=rest_pending
+
+    # Rearrange for try-clauses-with-cp: cp_goals cp_db cp_subst cp_counter rest_pending cp_goal cp_rest untried
+    # Need to push: cp_goals(6), cp_db(4), cp_subst(3), cp_counter(2), rest_pending(7), cp_goal(1), cp_rest(0), untried(5)
+    6 pick          # cp_goals (at 6) -> idx+1
+    5 pick          # cp_db (was 4, now 5) -> idx+1
+    5 pick          # cp_subst (was 3, now 5) -> idx+1
+    5 pick          # cp_counter (was 2, now 5) -> idx+1
+    11 pick         # rest_pending (was 7, now 11) -> idx+1
+    6 pick          # cp_goal (was 1, now 6) -> idx+1
+    6 pick          # cp_rest (was 0, now 6) -> idx+1
+    12 pick         # untried (was 5, now 12)
+    # Stack: (old 8 items) + cp_goals cp_db cp_subst cp_counter rest_pending cp_goal cp_rest untried
+
+    try-clauses-with-cp
+    # Stack: (old 8 items) + result
+
+    # Clean up old values (8 items: rest_pending cp_goals untried cp_db cp_subst cp_counter cp_goal cp_rest)
+    nip nip nip nip nip nip nip nip
+  then
+;
+
+# Try clauses with forward-passed choice stack
+# Stack: goals db subst counter pending_cp goal rest matches
+: try-clauses-with-cp ( GoalList ClauseDB Subst Int ChoiceStack Term GoalList ClauseDB -- SolveResult )
+  # Indices: 0=matches 1=rest 2=goal 3=pending_cp 4=counter 5=subst 6=db 7=goals
+  dup db-empty? if
+    # No matches - backtrack
+    drop drop drop  # matches, rest, goal
+    # Stack: goals db subst counter pending_cp
+    backtrack-with-cp
+  else
+    # Try first clause
+    dup db-first
+    5 pick rename-clause
+    # Stack: goals db subst counter pending_cp goal rest matches clause counter'
+
+    # Unify goal with clause head
+    4 pick                 # get goal
+    2 pick clause-head     # get head
+    9 pick                 # get subst (was at 5, +4 pushes)
+    unify
+    # Stack: goals db subst counter pending_cp goal rest matches clause counter' unify_result
+
+    dup unify-ok? if
+      unify-ok-subst
+      # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
+
+      # Check if there are more clauses - if so, create choice point
+      # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
+      # Indices: 0=new_subst 1=counter' 2=clause 3=matches 4=rest 5=goal 6=pending_cp 7=counter 8=subst 9=db 10=goals
+      3 pick db-rest db-empty? if
+        # No more clauses - just continue with current pending_cp
+        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
+
+        # New goals = clause_body ++ rest
+        # clause at 2, rest at 4
+        2 pick clause-body 5 pick gappend
+        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst new_goals
+        # Indices: 0=new_goals 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
+
+        # Need to arrange: new_goals db new_subst counter' pending_cp
+        # After each pick, indices shift by 1
+        10 pick         # db (at 10) -> stack +1, db now at 11
+        # Indices: 0=db 1=new_goals 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp 9=counter 10=subst 11=db 12=goals
+        3 pick          # new_subst (at 3)
+        # Indices: 0=new_subst 1=db 2=new_goals 3=new_subst 4=counter' 5=clause 6=matches 7=rest 8=goal 9=pending_cp ...
+        5 pick          # counter' (at 5)
+        # Indices: 0=counter' 1=new_subst 2=db 3=new_goals 4=new_subst 5=counter' 6=clause 7=matches 8=rest 9=goal 10=pending_cp ...
+        10 pick         # pending_cp (at 10)
+        # Stack top: new_goals db new_subst counter' pending_cp
+
+        solve-goals-with-cp
+        # Stack: (old 11 items) + result
+        # nip removes items from under result, need 11 nips to leave just result
+        nip nip nip nip nip nip nip nip nip nip nip
+      else
+        # More clauses - create choice point and add to pending
+        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
+        # Indices: 0=new_subst 1=counter' 2=clause 3=matches 4=rest 5=goal 6=pending_cp 7=counter 8=subst 9=db 10=goals
+
+        # Build choice point: (goal::rest, remaining_matches, db, subst, counter)
+        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
+        # Indices: 0=new_subst 1=counter' 2=clause 3=matches 4=rest 5=goal 6=pending_cp 7=counter 8=subst 9=db 10=goals
+        5 pick 5 pick gcons   # cp_goals = goal::rest (goal at 5, then rest at 5 after push)
+        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst cp_goals
+        # Indices: 0=cp_goals 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
+        4 pick db-rest        # remaining_matches (matches at 4)
+        # Stack: ... cp_goals remaining
+        # Indices: 0=remaining 1=cp_goals 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp 9=counter 10=subst 11=db 12=goals
+        11 pick               # db (at 11)
+        # Indices: 0=db 1=remaining 2=cp_goals 3=new_subst 4=counter' 5=clause 6=matches 7=rest 8=goal 9=pending_cp 10=counter 11=subst 12=db 13=goals
+        11 pick               # subst (at 11)
+        # Indices: 0=subst 1=db 2=remaining 3=cp_goals 4=new_subst 5=counter' 6=clause 7=matches 8=rest 9=goal 10=pending_cp 11=counter 12=subst 13=db 14=goals
+        11 pick               # counter (at 11)
+        # Stack top 5: cp_goals remaining db subst counter
+        make-cp
+        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst cp
+        # Indices: 0=cp 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
+
+        # Add to pending stack: cpcons needs (item, stack)
+        # pending_cp at 7, cp at 0
+        7 pick swap cpcons    # get pending_cp, swap so cp is second, then cpcons
+        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst new_pending
+        # Indices: 0=new_pending 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
+
+        # New goals = clause_body ++ rest
+        # clause at 3, rest at 5
+        3 pick clause-body 6 pick gappend
+        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst new_pending new_goals
+        # Indices: 0=new_goals 1=new_pending 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp 9=counter 10=subst 11=db 12=goals
+
+        # Need to arrange: new_goals db new_subst counter' new_pending
+        11 pick         # db (at 11)
+        # 0=db 1=new_goals 2=new_pending 3=new_subst 4=counter' 5=clause 6=matches 7=rest 8=goal 9=pending_cp 10=counter 11=subst 12=db 13=goals
+        4 pick          # new_subst (at 4)
+        # 0=new_subst 1=db 2=new_goals 3=new_pending 4=new_subst 5=counter' 6=clause ...
+        6 pick          # counter' (at 6)
+        # 0=counter' 1=new_subst 2=db 3=new_goals 4=new_pending 5=new_subst 6=counter' 7=clause ...
+        5 pick          # new_pending (at 5)
+        # Stack top: new_goals db new_subst counter' new_pending
+
+        solve-goals-with-cp
+        # Stack: (old 12 items) + result
+        # nip removes items from under result, need 12 nips to leave just result
+        nip nip nip nip nip nip nip nip nip nip nip nip
+      then
+    else
+      # Unify failed - try next clause (simple tail recursion)
+      drop drop drop  # unify_fail, counter', clause
+      # Stack: goals db subst counter pending_cp goal rest matches
+      db-rest
+      # Stack: goals db subst counter pending_cp goal rest remaining_matches
       try-clauses-with-cp
     then
   then
 ;
 
-# Try clauses with choice point creation
-: try-clauses-with-cp ( GoalList ClauseDB Subst Int Term GoalList ClauseDB -- SolveResult )
-  # Stack: goals db subst counter goal rest matches
-  # Indices: 0=matches 1=rest 2=goal 3=counter 4=subst 5=db 6=goals
-  dup db-empty? if
-    # No matches - failure
-    drop drop drop drop drop drop drop
-    make-solve-failure
-  else
-    # Save state for potential choice point
-    # We need: goals(=goal::rest), remaining_matches(=db-rest), orig_db, subst, counter
-
-    # Try first clause
-    dup db-first
-    4 pick rename-clause
-    # Stack: goals db subst counter goal rest matches clause counter'
-
-    # Unify goal with clause head
-    4 pick                 # get goal
-    2 pick clause-head     # get head
-    8 pick                 # get subst
-    unify
-    # Stack: goals db subst counter goal rest matches clause counter' unify_result
-
-    dup unify-ok? if
-      unify-ok-subst
-      # Stack: goals db subst counter goal rest matches clause counter' new_subst
-
-      # New goals = clause_body ++ rest
-      2 pick clause-body 5 pick gappend
-      # Stack: ... matches clause counter' new_subst new_goals
-
-      # Recurse with new goals
-      rot rot        # new_goals counter' new_subst
-      9 pick         # get db
-      swap           # new_goals counter' db new_subst
-      rot            # new_goals db new_subst counter'
-
-      solve-goals-with-cp
-      # Stack: goals db subst counter goal rest matches clause result
-
-      dup solve-success? if
-        # Success! Check if there are remaining clauses for choice point
-        # Stack: goals db subst counter goal rest matches clause result
-
-        # Check if matches has more clauses
-        # Stack indices: 0=result 1=clause 2=matches 3=rest ...
-        2 pick db-rest db-empty? if
-          # No more clauses - just return result as-is
-          nip nip
-          6 roll drop 5 roll drop 4 roll drop
-          3 roll drop rot drop swap drop
-        else
-          # More clauses - create choice point and add to result
-          # For simplicity, use a helper approach:
-          # 1. Save the result's fields
-          # 2. Build choice point from saved state
-          # 3. Build new result with updated cp_stack
-
-          # Stack: goals db subst counter goal rest matches clause result
-          # Save result fields to locals-like arrangement
-          dup solve-success-subst    # result res_subst
-          over solve-success-cp-stack # result res_subst res_cp
-          2 pick solve-success-var-counter # result res_subst res_cp res_ctr
-          # Drop original result
-          3 roll drop                 # res_subst res_cp res_ctr
-          # Stack now: goals db subst counter goal rest matches clause res_subst res_cp res_ctr
-
-          # Build choice point: need (GoalList, matches_rest, orig_db, old_subst, old_counter)
-          # Stack indices: 0=res_ctr 1=res_cp 2=res_subst 3=clause 4=matches 5=rest 6=goal 7=counter 8=subst 9=db 10=goals
-
-          # goal::rest
-          6 pick 6 pick gcons         # cp_goals
-          # Now: ... res_ctr cp_goals (indices shifted by 1)
-
-          # remaining matches
-          5 pick db-rest              # remaining (matches is now at index 5)
-          # Now: ... res_ctr cp_goals remaining
-
-          # orig_db
-          11 pick                     # orig_db (db is at index 11)
-          # Now: ... cp_goals remaining orig_db
-
-          # old_subst
-          11 pick                     # old_subst (subst is at index 11)
-
-          # old_counter
-          11 pick                     # old_counter (counter is at index 11)
-          # Now top 5: cp_goals remaining orig_db old_subst old_counter
-
-          make-cp                     # creates choice point
-          # Stack: goals db subst counter goal rest matches clause res_subst res_cp res_ctr cp
-
-          # Add to result cp_stack
-          # indices: 0=cp 1=res_ctr 2=res_cp 3=res_subst ...
-          2 pick cpcons               # new_cp = cpcons(cp, res_cp)
-          # Stack: ... res_ctr cp new_cp
-
-          # Build result: (res_subst, new_cp, res_ctr)
-          # After cpcons: indices 0=new_cp 1=res_ctr 2=res_cp 3=res_subst 4=clause ...
-          3 pick                      # res_subst
-          # Stack: ... res_ctr cp new_cp res_subst
-
-          swap                        # ... res_subst new_cp (new_cp on top)
-          # indices: 0=new_cp 1=res_subst 2=res_ctr 3=res_cp ...
-          2 pick                      # ... res_subst new_cp res_ctr
-          make-solve-success          # new_result
-          # Stack: ... res_ctr cp new_result
-
-          # Cleanup: need to drop all the intermediate values
-          # Stack: goals db subst counter goal rest matches clause res_subst res_cp res_ctr cp new_result
-          # 13 items total
-
-          nip nip nip nip nip         # drop cp res_ctr res_cp res_subst clause
-          # Stack: goals db subst counter goal rest matches new_result
-          6 roll drop 5 roll drop 4 roll drop
-          3 roll drop rot drop swap drop
-        then
-      else
-        dup solve-failure? if
-          # Try next clause
-          drop drop  # result, clause
-          db-rest
-          try-clauses-with-cp
-        else
-          # Error - propagate
-          nip nip
-          6 roll drop 5 roll drop 4 roll drop
-          3 roll drop rot drop swap drop
-        then
-      then
-    else
-      # Unify failed - try next clause
-      drop drop drop  # unify_fail, counter', clause
-      db-rest try-clauses-with-cp
-    then
-  then
-;
-
-# Continue solving from a choice point
-# Returns next solution or failure if exhausted
-#
-# WARNING: Stack Manipulation Fragility
-# =====================================
-# This function uses complex index-based stack picking to arrange arguments
-# for try-clauses-with-cp. The indices were carefully calculated and bugs
-# at lines 562/564 (pick indices) caused crashes that were difficult to diagnose.
-#
-# If modifying this function:
-# 1. Trace the full stack state after each operation
-# 2. Remember that each 'pick' shifts all indices by +1
-# 3. Use the inline comments tracking indices as a guide
-# 4. Test with both single-clause and multi-clause databases
-#
-# Future refactoring: Consider extracting helper functions to reduce
-# stack depth and improve maintainability.
-#
+# Continue solving from a choice point (for external use by print-all-solutions)
+# This is now simpler - just call backtrack-with-cp with appropriate setup
 : solve-next ( ChoiceStack ClauseDB -- SolveResult )
   over cpnil? if
     # No more choice points - exhausted
     drop drop make-solve-failure
   else
-    # Pop the choice point
+    # Set up dummy values and call backtrack-with-cp
+    # backtrack-with-cp expects: goals db subst counter pending_cp
+    # We pass dummy goals (gnull), the db, dummy subst (empty), dummy counter (0), and the cp_stack as pending
     # Stack: cp_stack db
-    swap                   # db cp_stack
-    dup cpcar              # db cp_stack cp
-    swap cpcdr             # db cp rest_cp_stack
-
-    # Extract cp fields
-    # Stack: db cp rest_cp_stack
-    # indices: 0=rest_cp_stack 1=cp 2=db
-
-    # Get goals, untried clauses, subst, counter from cp
-    over cp-goals          # db cp rest_cp goals (cp is at index 2 now)
-    # indices: 0=goals 1=rest_cp 2=cp 3=db
-
-    2 pick cp-untried-clauses  # cp is at index 2 -> db cp rest_cp goals untried
-    # indices: 0=untried 1=goals 2=rest_cp 3=cp 4=db
-
-    3 pick cp-subst        # cp at index 3 -> ... goals untried subst
-    # indices: 0=subst 1=untried 2=goals 3=rest_cp 4=cp 5=db
-    4 pick cp-var-counter  # cp is now at index 4
-    # Stack: db cp rest_cp goals untried subst counter
-
-    # Split goals into goal and rest_goals
-    3 pick gcar            # goal (goals at index 3)
-    4 pick gcdr            # rest_goals (goals at index 4)
-    # Stack: db cp rest_cp goals untried subst counter goal rest_goals
-    # indices: 0=rest_goals 1=goal 2=counter 3=subst 4=untried 5=goals 6=rest_cp 7=cp 8=db
-
-    # For try-clauses-with-cp we need:
-    # ( GoalList ClauseDB Subst Int Term GoalList ClauseDB -- SolveResult )
-    # That's: goals db subst counter goal rest_goals untried_clauses
-
-    # Current stack: db cp rest_cp goals untried subst counter goal rest_goals
-    # indices: 0=rest_goals 1=goal 2=counter 3=subst 4=untried 5=goals 6=rest_cp 7=cp 8=db
-
-    5 pick                 # goals (at 5)
-    # 0=goals 1=rest_goals 2=goal 3=counter 4=subst 5=untried 6=goals 7=rest_cp 8=cp 9=db
-    9 pick                 # db (at 9)
-    # 0=db 1=goals 2=rest_goals 3=goal 4=counter 5=subst 6=untried ...
-    5 pick                 # subst (at 5)
-    # 0=subst 1=db 2=goals 3=rest_goals 4=goal 5=counter 6=subst ...
-    5 pick                 # counter (at 5)
-    # 0=counter 1=subst 2=db 3=goals 4=rest_goals 5=goal 6=counter ...
-    5 pick                 # goal (at 5)
-    # 0=goal 1=counter 2=subst 3=db 4=goals 5=rest_goals 6=goal ...
-    5 pick                 # rest_goals (was at 0, +5 pushes = 5)
-    # 0=rest_goals 1=goal 2=counter 3=subst 4=db 5=goals 6=rest_goals 7=goal ...
-    10 pick                # untried_clauses (was at 4, +6 pushes = 10)
-    # Stack has: (orig) + goals db subst counter goal rest_goals untried
-
-    try-clauses-with-cp
-    # Stack: db cp rest_cp goals untried subst counter goal rest_goals result
-
-    # Clean up the intermediate values (9 items before result)
-    nip nip nip nip nip nip nip nip nip
+    gnull          # dummy goals
+    rot            # Stack: gnull cp_stack db
+    swap           # Stack: gnull db cp_stack
+    subst-empty    # dummy subst
+    swap           # Stack: gnull db subst-empty cp_stack
+    0              # dummy counter
+    swap           # Stack: gnull db subst-empty 0 cp_stack (= pending_cp)
+    backtrack-with-cp
   then
 ;
 
@@ -597,6 +660,7 @@ include "../builtins"
 ;
 
 # Run query returning all solutions via choice points
+# TODO: Re-enable after fixing TCO issue
 : run-query-all ( GoalList ClauseDB -- SolveResult )
-  subst-empty 0 solve-all
+  subst-empty 0 solve-all  # Use solve-all for multi-solution support
 ;

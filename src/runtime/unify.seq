@@ -11,8 +11,9 @@ include "../term"
 
 # Follow substitution chain to find actual value
 # Simplified: just return term unchanged (single-level only)
-: deref ( Term Subst -- Term )
-  drop  # Just drop Subst, return Term unchanged for now
+# Preserves Subst on stack for callers that need it
+: deref ( Term Subst -- Term Subst )
+  # Just return both unchanged for now
 ;
 
 # ============================================
@@ -23,22 +24,27 @@ include "../term"
 : occurs-in? ( Int Term Subst -- Bool )
   # First dereference the term
   deref
-  # Stack: var_id term
-  dup tvar? if
-    tvar-id i.=
+  # Stack: var_id term subst
+  over tvar? if
+    # Stack: var_id term subst
+    drop swap tvar-id i.=
   else
-    dup tcompound? if
-      tcompound-args rot swap occurs-in-termlist?
+    over tcompound? if
+      # Stack: var_id term subst
+      swap tcompound-args swap occurs-in-termlist?
     else
-      dup tlist? if
-        dup tlist-head
+      over tlist? if
+        # Stack: var_id term subst
+        over tlist-head
+        # Stack: var_id term subst head
         3 pick swap 3 pick occurs-in? if
           drop drop drop true
         else
-          tlist-tail rot swap occurs-in?
+          # Stack: var_id term subst
+          swap tlist-tail swap occurs-in?
         then
       else
-        drop drop false
+        drop drop drop false
       then
     then
   then
@@ -68,13 +74,15 @@ include "../term"
   # Dereference t2 first
   dup                  # t1 t2 subst subst
   rot                  # t1 subst subst t2
-  swap deref           # t1 subst t2'
+  swap deref           # t1 subst t2' subst
+  drop                 # t1 subst t2'
   # Dereference t1
   rot                  # subst t2' t1
   rot                  # t2' t1 subst
   dup                  # t2' t1 subst subst
   rot                  # t2' subst subst t1
-  swap deref           # t2' subst t1'
+  swap deref           # t2' subst t1' subst
+  drop                 # t2' subst t1'
   # Rearrange to t1' t2' subst
   rot                  # subst t1' t2'
   rot                  # t1' t2' subst

@@ -34,7 +34,11 @@ include "term"
   Make-TCons ;
 
 : tnil? ( TokenList -- Bool )
-  variant.tag 0 i.= ;
+  match
+    TNil -> true
+    TCons -> drop drop false
+  end
+;
 
 : tcar ( TokenList -- Token )
   0 variant.field-at ;

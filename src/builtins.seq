@@ -173,21 +173,22 @@ include "runtime/unify"
 : eval-arith ( Term Subst -- ArithResult )
   # First dereference if variable
   deref
+  # Stack: Term Subst (deref now preserves both)
 
-  dup tint? if
-    tint-value make-arith-int
+  over tint? if
+    drop tint-value make-arith-int
   else
-    dup tfloat? if
-      tfloat-value make-arith-float
+    over tfloat? if
+      drop tfloat-value make-arith-float
     else
-      dup tcompound? if
+      over tcompound? if
         eval-arith-compound
       else
-        dup tatom? if
+        over tatom? if
           # Could be a named constant
-          drop "Not a number" make-arith-err
+          drop drop "Not a number" make-arith-err
         else
-          drop "Invalid arithmetic expression" make-arith-err
+          drop drop "Invalid arithmetic expression" make-arith-err
         then
       then
     then
@@ -195,8 +196,8 @@ include "runtime/unify"
 ;
 
 : eval-arith-compound ( Term Subst -- ArithResult )
-  over tcompound-functor
-  over tcompound-args
+  over tcompound-functor     # Term Subst -> Term Subst Functor
+  2 pick tcompound-args      # Term Subst Functor -> Term Subst Functor Args
   # Stack: term subst functor args
 
   # Get both operands
@@ -225,10 +226,12 @@ include "runtime/unify"
     # Stack: term subst functor r1 r2
 
     over arith-err? if
-      nip nip nip nip nip
+      # r1 is error - drop r2, keep r1
+      drop nip nip nip
     else
       dup arith-err? if
-        nip nip nip nip nip
+        # r2 is error - nip away r1 and others, keep r2
+        nip nip nip nip
       else
         # Check operator
         3 pick "+" string.equal? if
@@ -330,88 +333,124 @@ include "runtime/unify"
 # Comparison Built-ins
 # ============================================
 
-: exec-lt ( Term Subst -- UnifyResult )
-  exec-comparison [ i.< ] [ f.< ] ;
-
-: exec-gt ( Term Subst -- UnifyResult )
-  exec-comparison [ i.> ] [ f.> ] ;
-
-: exec-le ( Term Subst -- UnifyResult )
-  exec-comparison [ i.< not ] [ f.< not ] ;  # a =< b means not (a i.> b)
-
-: exec-ge ( Term Subst -- UnifyResult )
-  exec-comparison [ i.> not ] [ f.> not ] ;
-
-: exec-arith-eq ( Term Subst -- UnifyResult )
-  exec-comparison [ i.= ] [ f.= ] ;
-
-: exec-arith-neq ( Term Subst -- UnifyResult )
-  dup                  # save Subst
+# Helper: extract and evaluate comparison operands
+# Returns: Subst ArithResult ArithResult
+: eval-comparison-args ( Term Subst -- Subst ArithResult ArithResult )
+  dup                  # save Subst for return
   # Stack: Term Subst Subst
   rot tcompound-args   # get args
   # Stack: Subst Subst Args
-  dup tlcar rot eval-arith
-  # Stack: Subst Args r1
-  swap tlcdr tlcar rot eval-arith
+  dup tlcar            # get first arg
+  # Stack: Subst Subst Args FirstArg
+  3 pick               # copy Subst for eval-arith
+  # Stack: Subst Subst Args FirstArg Subst
+  eval-arith           # evaluate first arg
+  # Stack: Subst Subst Args r1
+  swap tlcdr tlcar     # get second arg
+  # Stack: Subst Subst r1 SecondArg
+  3 pick               # copy Subst for eval-arith
+  # Stack: Subst Subst r1 SecondArg Subst
+  eval-arith           # evaluate second arg
+  # Stack: Subst Subst r1 r2
+  rot drop             # drop extra Subst
   # Stack: Subst r1 r2
+;
 
+: exec-lt ( Term Subst -- UnifyResult )
+  eval-comparison-args
+  # Stack: Subst r1 r2
   over arith-err? if drop drop drop make-unify-fail else
   dup arith-err? if drop drop drop make-unify-fail else
   over arith-int? over arith-int? and if
     swap arith-int-value swap arith-int-value
     # Stack: Subst v1 v2
-    i.= not if
-      drop drop make-unify-ok
-    else
-      drop drop drop make-unify-fail
-    then
+    i.< if make-unify-ok else drop make-unify-fail then
   else
     swap
     dup arith-int? if arith-int-value int->float else arith-float-value then
     swap
     dup arith-int? if arith-int-value int->float else arith-float-value then
-    # Stack: Subst fv1 fv2
-    f.= not if
-      drop drop make-unify-ok
-    else
-      drop drop drop make-unify-fail
-    then
+    # Stack: Subst f1 f2
+    f.< if make-unify-ok else drop make-unify-fail then
   then then then
 ;
 
-: exec-comparison ( Term Subst Quot Quot -- UnifyResult )
-  # Drop quotations - we use hardcoded i.< for now
-  drop drop
-  # Stack: Term Subst
-  dup                  # save Subst
-  # Stack: Term Subst Subst
-  rot tcompound-args   # get args
-  # Stack: Subst Subst Args
-  dup tlcar rot eval-arith
-  # Stack: Subst Args r1
-  swap tlcdr tlcar rot eval-arith
-  # Stack: Subst r1 r2
-
+: exec-gt ( Term Subst -- UnifyResult )
+  eval-comparison-args
   over arith-err? if drop drop drop make-unify-fail else
   dup arith-err? if drop drop drop make-unify-fail else
   over arith-int? over arith-int? and if
     swap arith-int-value swap arith-int-value
-    # Stack: Subst v1 v2
-    i.< if
-      drop drop make-unify-ok
-    else
-      drop drop drop make-unify-fail
-    then
+    i.> if make-unify-ok else drop make-unify-fail then
   else
     swap
     dup arith-int? if arith-int-value int->float else arith-float-value then
     swap
     dup arith-int? if arith-int-value int->float else arith-float-value then
-    # Stack: Subst fv1 fv2
-    f.< if
-      drop drop make-unify-ok
-    else
-      drop drop drop make-unify-fail
-    then
+    f.> if make-unify-ok else drop make-unify-fail then
+  then then then
+;
+
+: exec-le ( Term Subst -- UnifyResult )
+  eval-comparison-args
+  over arith-err? if drop drop drop make-unify-fail else
+  dup arith-err? if drop drop drop make-unify-fail else
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value
+    i.> not if make-unify-ok else drop make-unify-fail then
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    f.> not if make-unify-ok else drop make-unify-fail then
+  then then then
+;
+
+: exec-ge ( Term Subst -- UnifyResult )
+  eval-comparison-args
+  over arith-err? if drop drop drop make-unify-fail else
+  dup arith-err? if drop drop drop make-unify-fail else
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value
+    i.< not if make-unify-ok else drop make-unify-fail then
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    f.< not if make-unify-ok else drop make-unify-fail then
+  then then then
+;
+
+: exec-arith-eq ( Term Subst -- UnifyResult )
+  eval-comparison-args
+  over arith-err? if drop drop drop make-unify-fail else
+  dup arith-err? if drop drop drop make-unify-fail else
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value
+    i.= if make-unify-ok else drop make-unify-fail then
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    f.= if make-unify-ok else drop make-unify-fail then
+  then then then
+;
+
+: exec-arith-neq ( Term Subst -- UnifyResult )
+  eval-comparison-args
+  over arith-err? if drop drop drop make-unify-fail else
+  dup arith-err? if drop drop drop make-unify-fail else
+  over arith-int? over arith-int? and if
+    swap arith-int-value swap arith-int-value
+    i.= not if make-unify-ok else drop make-unify-fail then
+  else
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    swap
+    dup arith-int? if arith-int-value int->float else arith-float-value then
+    f.= not if make-unify-ok else drop make-unify-fail then
   then then then
 ;

@@ -85,15 +85,15 @@ include "solve"
       drop drop drop "false." io.write-line
     else
       # Has choice points - get next solution
-      over solve-next
-      # Stack: result db cp_stack next_result
+      # Stack: result db cp_stack
+      over       # copy db: result db cp_stack db
+      solve-next # (ChoiceStack ClauseDB -- SolveResult): result db next_result
+      # Stack: result db next_result
 
-      nip        # drop cp_stack
-      rot drop   # drop old result
-      # Stack: db next_result
+      rot drop   # drop old result: db next_result
       swap       # Stack: next_result db
 
-      # Recurse
+      # Recurse (should be TCO)
       print-all-solutions
     then
   else
@@ -134,11 +134,25 @@ include "solve"
   if
     # Stack: ClauseDB GoalList
     over swap          # Stack: ClauseDB ClauseDB GoalList
-    swap run-query-all # Stack: ClauseDB SolveResult
-    swap               # Stack: SolveResult ClauseDB
-    print-all-solutions
+    swap run-query     # Stack: ClauseDB SolveResult
+    # Print single solution for now (solve-all has bugs)
+    print-single-result
+    drop  # drop ClauseDB
   else
     drop drop "Error: Failed to parse query" io.write-line
+  then
+;
+
+# Print a single result (for use with solve-first)
+: print-single-result ( SolveResult -- )
+  dup solve-success? if
+    solve-success-subst print-bindings
+  else
+    dup solve-failure? if
+      drop "false." io.write-line
+    else
+      "Error: " swap solve-error-message string.concat io.write-line
+    then
   then
 ;
 
