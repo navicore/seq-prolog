@@ -204,7 +204,8 @@ include "version"
 : parse-query-tokens ( TokenList Int -- ParseResult TokenList Int )
   swap tcdr swap  # skip ?-
   # Stack: tokens_after_qmark counter
-  parse-term-with-counter
+  # Use parse-goals-with-counter to handle comma-separated goals
+  parse-goals-with-counter
   # Stack: ParseResult counter
   over parse-ok-term? if
     over parse-term-remaining  # get remaining tokens from term parse
@@ -389,8 +390,10 @@ include "version"
         drop
       then
       over  # Stack: db GoalList db
-      run-query  # Stack: db SolveResult (single solution)
-      display-result  # Stack: db
+      dup rot  # Stack: db db GoalList db
+      run-query-all  # Stack: db db SolveResult (with choice points)
+      swap  # Stack: db SolveResult db
+      display-all-solutions  # Stack: db
     else
       # Stack: db result
       parse-err-message  # Stack: db message

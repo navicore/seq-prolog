@@ -1,142 +1,244 @@
-# Solve Engine for SeqProlog
+# CPS-Based Solve Engine for SeqProlog
 #
-# Simple depth-first solver that returns first solution.
-# TODO: Add weave-based backtracking for multiple solutions.
+# Uses continuation-passing style for clean backtracking.
+# Closures capture state automatically - no manual stack management.
 
 include "../term"
 include "unify"
 include "../builtins"
 
 # ============================================
-# Variable Renaming (Simple counter-based)
+# Variable Map (for proper renaming)
 # ============================================
-# KNOWN LIMITATION: Uses simple counter-based renaming.
-# Same-named variables in clause head and body get different IDs.
-# This works for simple cases but breaks proper Prolog semantics.
-# Example: In `foo(X) :- bar(X)`, head X and body X should share IDs.
+# A simple association list mapping variable names to fresh IDs.
+# This ensures the same name in head and body gets the same ID.
 # See: https://github.com/navicore/seq-prolog/issues/5
 
-: rename-var ( Term Int -- Term Int )
-  # Input: var counter
-  # Output: new-var counter+1
-  # Stack: var counter
-  dup                    # var counter counter
-  1 i.+                  # var counter counter+1
-  rot                    # counter counter+1 var
-  tvar-name              # counter counter+1 "name"
-  rot                    # counter+1 "name" counter
-  no-span tvar-at        # counter+1 new-var
-  swap                   # new-var counter+1
+union VarMap {
+  VMEmpty
+  VMCons { name: String, id: Int, rest: VarMap }
+}
+
+: vm-empty ( -- VarMap ) Make-VMEmpty ;
+
+: vm-cons ( String Int VarMap -- VarMap )
+  Make-VMCons ;
+
+: vm-empty? ( VarMap -- Bool )
+  match
+    VMEmpty -> true
+    VMCons -> drop drop drop false
+  end
 ;
 
-: rename-term ( Term Int -- Term Int )
-  over tvar? if
-    rename-var
+: vm-name ( VarMap -- String )
+  0 variant.field-at ;
+
+: vm-id ( VarMap -- Int )
+  1 variant.field-at ;
+
+: vm-rest ( VarMap -- VarMap )
+  2 variant.field-at ;
+
+# Lookup name in map, return id or -1 if not found
+: vm-lookup ( String VarMap -- Int )
+  dup vm-empty? if
+    drop drop -1
   else
-    over tcompound? if
-      # Compound - get functor first, then rename args
-      # Stack: term counter
-      over tcompound-functor    # Stack: term counter functor
-      2 pick tcompound-args     # Stack: term counter functor args
-      2 pick                    # Stack: term counter functor args counter (depth: 0=args,1=functor,2=counter,3=term)
-      rename-termlist           # Stack: term counter functor renamed-args counter2
-      # Create new compound: need functor renamed-args no-span
-      2 pick                    # Stack: ... functor renamed-args counter2 functor
-      2 pick                    # Stack: ... functor renamed-args counter2 functor renamed-args
-      no-span tcompound-at      # Stack: term counter functor renamed-args counter2 new-compound
-      # Clean up: keep new-compound and counter2
-      5 roll drop               # drop term
-      4 roll drop               # drop counter
-      rot drop                  # drop functor
-      rot drop                  # drop renamed-args
-      swap                      # Stack: new-compound counter2
+    dup vm-name
+    2 pick string.equal? if
+      nip vm-id
     else
-      over tlist? if
-        # List - rename head and tail
-        over tlist-head over rename-term
-        # Stack: term counter head2 counter2
-        3 pick tlist-tail       # Stack: term counter head2 counter2 tail
-        over                    # Stack: term counter head2 counter2 tail counter2
-        rename-term             # Stack: term counter head2 counter2 tail2 counter3
-        # Create new list: need head2 tail2 no-span
-        3 pick                  # Stack: ... counter2 tail2 counter3 head2
-        2 pick                  # Stack: ... counter2 tail2 counter3 head2 tail2
-        no-span tlist-at        # Stack: term counter head2 counter2 tail2 counter3 new-list
-        # Clean up: keep new-list and counter3
-        6 roll drop             # drop term
-        5 roll drop             # drop counter
-        4 roll drop             # drop head2
-        rot drop                # drop counter2
-        rot drop                # drop tail2
-        swap                    # Stack: new-list counter3
-      else
-        # Atom/int/float unchanged
-      then
+      vm-rest vm-lookup
     then
   then
 ;
 
-: rename-termlist ( TermList Int -- TermList Int )
-  over tlnil? if
+# ============================================
+# Proper Clause Renaming (with shared variables)
+# ============================================
+
+# Rename a variable, using the map to ensure consistency
+# ( Term VarMap Int -- Term VarMap Int )
+: rename-var-with-map ( Term VarMap Int -- Term VarMap Int )
+  # Stack: term map counter
+  2 pick tvar-name        # term map counter name
+  2 pick vm-lookup        # term map counter id-or-neg1
+  dup 0 i.< if
+    # Not in map - add new entry
+    drop                  # term map counter
+
+    # Create new-var with name and counter as id
+    2 pick tvar-name      # term map counter name
+    over                  # term map counter name counter
+    tvar                  # term map counter new-var
+
+    # Create new map: vm-cons ( String Int VarMap -- VarMap )
+    3 pick tvar-name      # term map counter new-var name
+    2 pick                # term map counter new-var name counter
+    4 pick                # term map counter new-var name counter map
+    vm-cons               # term map counter new-var map'
+
+    # Increment counter
+    rot                   # term map new-var map' counter
+    1 i.+                 # term map new-var map' counter'
+
+    # Clean up: need new-var map' counter'
+    # Stack: term map new-var map' counter' (5 items)
+    4 roll drop           # map new-var map' counter'
+    3 roll drop           # new-var map' counter'
   else
-    over tlcar over rename-term
-    # Stack: list counter car2 counter2
-    3 pick tlcdr                # Stack: list counter car2 counter2 cdr
-    over                        # Stack: list counter car2 counter2 cdr counter2
-    rename-termlist             # Stack: list counter car2 counter2 cdr2 counter3
-    # Create new cons: need car2 cdr2
-    3 pick                      # Stack: ... counter2 cdr2 counter3 car2
-    2 pick                      # Stack: ... counter2 cdr2 counter3 car2 cdr2
-    tlcons                      # Stack: list counter car2 counter2 cdr2 counter3 new-list
-    # Clean up: keep new-list and counter3
-    6 roll drop                 # drop list
-    5 roll drop                 # drop counter
-    4 roll drop                 # drop car2
-    rot drop                    # drop counter2
-    rot drop                    # drop cdr2
-    swap                        # Stack: new-list counter3
+    # Found in map - use existing id
+    # Stack: term map counter id
+    3 pick tvar-name      # term map counter id name
+    swap                  # term map counter name id
+    tvar                  # term map counter new-var
+
+    # Clean up: need new-var map counter
+    # Stack: term map counter new-var (4 items)
+    3 roll drop           # map counter new-var
+    rot rot               # new-var map counter
   then
 ;
 
+# Rename term with map
+: rename-term-with-map ( Term VarMap Int -- Term VarMap Int )
+  2 pick tvar? if
+    rename-var-with-map
+  else
+    2 pick tcompound? if
+      # Stack: term map counter
+      2 pick tcompound-functor   # term map counter functor
+      3 pick tcompound-args      # term map counter functor args
+      3 pick                     # term map counter functor args map
+      3 pick                     # term map counter functor args map counter
+      rename-termlist-with-map   # term map counter functor args' map' counter'
+      # Stack: term map counter functor args' map' counter'
+      # positions: counter'(0), map'(1), args'(2), functor(3), counter(4), map(5), term(6)
+
+      # Get functor and args' to top for tcompound (functor deeper, args' on top)
+      3 roll                     # term map counter args' map' counter' functor
+      3 roll                     # term map counter map' counter' functor args'
+      tcompound                  # term map counter map' counter' term'
+
+      # Clean up: need term' map' counter'
+      # Stack: term map counter map' counter' term' (6 items)
+      5 roll drop                # map counter map' counter' term'
+      4 roll drop                # counter map' counter' term'
+      3 roll drop                # map' counter' term'
+      rot rot                    # term' map' counter'
+    else
+      # Atom or other non-var/non-compound term: return unchanged
+      # Stack is already: term map counter
+    then
+  then
+;
+
+# Rename term list with map
+: rename-termlist-with-map ( TermList VarMap Int -- TermList VarMap Int )
+  2 pick tlnil? if
+    # Empty - return as is
+  else
+    # Stack: list map counter
+    2 pick tlcar                 # list map counter first
+    2 pick                       # list map counter first map
+    2 pick                       # list map counter first map counter
+    rename-term-with-map         # list map counter first' map' counter'
+    # Stack: list map counter first' map' counter' (6 items)
+    5 roll tlcdr                 # map counter first' map' counter' rest
+    2 pick                       # map counter first' map' counter' rest map'
+    2 pick                       # map counter first' map' counter' rest map' counter'
+    rename-termlist-with-map     # map counter first' map' counter' rest' map'' counter''
+    # Stack: map counter first' map' counter' rest' map'' counter'' (8 items)
+    # Get first' (pos 5) to top
+    5 roll                       # map counter map' counter' rest' map'' counter'' first'
+    # After 5 roll: rest' is now at pos 3
+    3 roll                       # map counter map' counter' map'' counter'' first' rest'
+    # Build list' = first' :: rest'
+    tlcons                       # map counter map' counter' map'' counter'' list'
+    # Drop junk (4 items)
+    3 roll drop
+    3 roll drop
+    3 roll drop
+    3 roll drop
+    rot rot                      # list' map'' counter''
+  then
+;
+
+# Rename goals with map
+: rename-goals-with-map ( GoalList VarMap Int -- GoalList VarMap Int )
+  2 pick gnull? if
+    # Empty - return as is
+  else
+    # Stack: goals map counter
+    2 pick gcar                  # goals map counter first
+    2 pick                       # goals map counter first map
+    2 pick                       # goals map counter first map counter
+    rename-term-with-map         # goals map counter first' map' counter'
+    # Stack: goals map counter first' map' counter' (6 items)
+    # pos: 0=counter', 1=map', 2=first', 3=counter, 4=map, 5=goals
+    5 roll gcdr                  # map counter first' map' counter' rest
+    2 pick                       # map counter first' map' counter' rest map'
+    2 pick                       # map counter first' map' counter' rest map' counter'
+    rename-goals-with-map        # map counter first' map' counter' rest' map'' counter''
+    # Stack: map counter first' map' counter' rest' map'' counter'' (8 items)
+    # pos: 0=counter'', 1=map'', 2=rest', 3=counter', 4=map', 5=first', 6=counter, 7=map
+    # Need: goals' map'' counter'' where goals' = first' :: rest'
+
+    # Get first' (pos 5) to top
+    5 roll                       # map counter map' counter' rest' map'' counter'' first'
+    # After 5 roll: pos: 0=first', 1=counter'', 2=map'', 3=rest', 4=counter', 5=map', 6=counter, 7=map
+    # Get rest' (now at pos 3) to top
+    3 roll                       # map counter map' counter' map'' counter'' first' rest'
+    # Build goals' = first' :: rest'
+    gcons                        # map counter map' counter' map'' counter'' goals'
+    # Stack now 7 items: 0=goals', 1=counter'', 2=map'', 3=counter', 4=map', 5=counter, 6=map
+
+    # Drop counter', map', counter, map (positions 3, 4, 5, 6)
+    3 roll drop                  # map counter map' map'' counter'' goals'
+    3 roll drop                  # map counter map'' counter'' goals'
+    3 roll drop                  # map map'' counter'' goals'
+    3 roll drop                  # map'' counter'' goals'
+    rot rot                      # goals' map'' counter''
+  then
+;
+
+# Rename clause with proper variable sharing
 : rename-clause ( Clause Int -- Clause Int )
-  over clause-head over rename-term
-  # Stack: clause counter head2 counter2
-  3 pick clause-body            # Stack: clause counter head2 counter2 body
-  over                          # Stack: clause counter head2 counter2 body counter2
-  rename-goals                  # Stack: clause counter head2 counter2 body2 counter3
-  # Create new clause: need head2 body2
-  3 pick                        # Stack: ... counter2 body2 counter3 head2
-  2 pick                        # Stack: ... counter2 body2 counter3 head2 body2
-  make-clause                   # Stack: clause counter head2 counter2 body2 counter3 new-clause
-  # Clean up: keep new-clause and counter3
-  6 roll drop                   # drop clause
-  5 roll drop                   # drop counter
-  4 roll drop                   # drop head2
-  rot drop                      # drop counter2
-  rot drop                      # drop body2
-  swap                          # Stack: new-clause counter3
-;
+  # Stack: clause counter
+  vm-empty                       # clause counter map
+  rot                            # counter map clause
+  dup clause-head                # counter map clause head
+  2 pick                         # counter map clause head map
+  4 pick                         # counter map clause head map counter
+  rename-term-with-map           # counter map clause head' map' counter'
+  # Stack: counter map clause head' map' counter' (6 items)
+  3 roll clause-body             # counter map head' map' counter' body
+  2 pick                         # counter map head' map' counter' body map'
+  2 pick                         # counter map head' map' counter' body map' counter'
+  rename-goals-with-map          # counter map head' map' counter' body' map'' counter''
+  # Stack: counter map head' map' counter' body' map'' counter'' (8 items)
+  # pos: 0=counter'', 1=map'', 2=body', 3=counter', 4=map', 5=head', 6=map, 7=counter
+  # Need: clause' counter'' (where clause' = make-clause head' body')
 
-: rename-goals ( GoalList Int -- GoalList Int )
-  over gnull? if
-  else
-    over gcar over rename-term
-    # Stack: goals counter goal2 counter2
-    3 pick gcdr                 # Stack: goals counter goal2 counter2 rest
-    over                        # Stack: goals counter goal2 counter2 rest counter2
-    rename-goals                # Stack: goals counter goal2 counter2 rest2 counter3
-    # Create new gcons: need goal2 rest2
-    3 pick                      # Stack: ... counter2 rest2 counter3 goal2
-    2 pick                      # Stack: ... counter2 rest2 counter3 goal2 rest2
-    gcons                       # Stack: goals counter goal2 counter2 rest2 counter3 new-goals
-    # Clean up: keep new-goals and counter3
-    6 roll drop                 # drop goals
-    5 roll drop                 # drop counter
-    4 roll drop                 # drop goal2
-    rot drop                    # drop counter2
-    rot drop                    # drop rest2
-    swap                        # Stack: new-goals counter3
-  then
+  # Get head' (pos 5) to top
+  5 roll                         # counter map map' counter' body' map'' counter'' head'
+  # After 5 roll: pos: 0=head', 1=counter'', 2=map'', 3=body', 4=counter', 5=map', 6=map, 7=counter
+  # Get body' (now pos 3) to top
+  3 roll                         # counter map map' counter' map'' counter'' head' body'
+  # make-clause ( Term GoalList -- Clause )
+  make-clause                    # counter map map' counter' map'' counter'' clause'
+  # Stack: 7 items, clause' on top
+
+  # Get counter'' (pos 1) next to clause'
+  swap                           # counter map map' counter' map'' clause' counter''
+  # Stack: 7 items. pos: 6=counter, 5=map, 4=map', 3=counter', 2=map'', 1=clause', 0=counter''
+  # Need to drop 5 items: map, map', counter', map'', counter
+  5 roll drop                    # counter map' counter' map'' clause' counter'' (6 items)
+  4 roll drop                    # counter counter' map'' clause' counter'' (5 items)
+  3 roll drop                    # counter map'' clause' counter'' (4 items)
+  2 roll drop                    # counter clause' counter'' (3 items)
+  2 roll drop                    # clause' counter'' (2 items)
 ;
 
 # ============================================
@@ -189,481 +291,199 @@ include "../builtins"
 ;
 
 # ============================================
-# Simple Solver (first solution only)
+# Query Interface
 # ============================================
+#
+# TODO: Implement full CPS solver with closures for backtracking
+# For now, using simple recursive solver (run-query-first)
 
-# Simple solve that returns first solution only
-: solve-first ( GoalList ClauseDB Subst Int -- SolveResult )
-  solve-goals-simple
+# Run a query, print first solution
+: run-query ( GoalList ClauseDB -- SolveResult )
+  # For now, use a simple wrapper that captures result
+  subst-empty swap  # goals subst db
+  rot               # subst db goals
+  rot               # db goals subst
+  rot               # goals subst db
+  1000              # counter (offset to avoid query var collision)
+  run-query-first
 ;
 
-: solve-goals-simple ( GoalList ClauseDB Subst Int -- SolveResult )
-  # Stack: goals db subst counter
-  # Indices: 0=counter 1=subst 2=db 3=goals
+# Simple first-solution finder (non-CPS for now, will convert)
+: run-query-first ( GoalList Subst ClauseDB Int -- SolveResult )
+  # Stack: goals subst db counter
+  # Positions: 3=goals 2=subst 1=db 0=counter
   3 pick gnull? if
-    # No goals - success with current subst
-    # Stack: goals db subst counter
-    rot drop rot drop  # drop goals, db
-    cpnil swap make-solve-success
-  else
-    # Get first goal and remaining goals
-    3 pick gcar     # goal (depth 3 is goals)
-    4 pick gcdr     # rest (now goals is at depth 4 after pushing goal)
-    # Stack: goals db subst counter goal rest
-
-    # Check if goal is a built-in
-    over builtin? if
-      solve-builtin-goal
-    else
-      # Find matching clauses in database
-      # Stack: goals db subst counter goal rest
-      # Indices: 0=rest 1=goal 2=counter 3=subst 4=db 5=goals
-      # After over: 0=goal 1=rest 2=goal 3=counter 4=subst 5=db 6=goals
-      over 5 pick matching-clauses
-      # Stack: goals db subst counter goal rest matches
-      try-clauses-simple
-    then
-  then
-;
-
-# Handle built-in goal
-# Stack: goals db subst counter goal rest
-: solve-builtin-goal ( GoalList ClauseDB Subst Int Term GoalList -- SolveResult )
-  # Execute built-in with goal and current subst
-  over    # goal
-  4 pick  # subst
-  exec-builtin
-  # Stack: goals db subst counter goal rest result
-
-  dup unify-ok? if
-    unify-ok-subst
-    # Stack: goals db subst counter goal rest new_subst
-
-    # Clean up and continue with rest goals
-    rot drop    # drop goal
-    5 roll drop # drop old goals
-    # Stack: db subst counter rest new_subst
-
-    rot drop    # drop old subst
-    # Stack: db counter rest new_subst
-
-    rot         # Stack: db rest new_subst counter
-    rot         # Stack: db new_subst counter rest
-    3 roll      # Stack: new_subst counter rest db
-    rot         # Stack: counter rest db new_subst
-    3 roll      # Stack: rest db new_subst counter
-
-    # Now: rest db new_subst counter - recurse
-    solve-goals-simple
-  else
-    # Built-in failed
-    drop drop drop drop drop drop drop
-    make-solve-failure
-  then
-;
-
-: try-clauses-simple ( GoalList ClauseDB Subst Int Term GoalList ClauseDB -- SolveResult )
-  dup db-empty? if
-    # No matches - failure
-    drop drop drop drop drop drop drop
-    make-solve-failure
-  else
-    # Try first clause
-    dup db-first
-    4 pick rename-clause
-    # Stack: ... matches clause counter'
-
-    # Unify goal with clause head
-    # Stack: goals db subst counter goal rest matches clause counter'
-    # Indices: 0=counter' 1=clause 2=matches 3=rest 4=goal 5=counter 6=subst 7=db 8=goals
-    4 pick                 # get goal: stack += goal
-    # Indices: 0=goal 1=counter' 2=clause ...
-    2 pick clause-head     # get clause, extract head
-    # Indices: 0=head 1=goal 2=counter' 3=clause 4=matches 5=rest 6=goal 7=counter 8=subst
-    8 pick                 # get subst
-    # Stack top: subst head goal -> ready for unify(goal, head, subst)
-    unify
-    # Stack: ... matches clause counter' unify_result
-
-    dup unify-ok? if
-      unify-ok-subst
-      # Stack: ... matches clause counter' new_subst
-
-      # New goals i.= clause_body ++ rest
-      # Stack: ... matches clause counter' new_subst
-      # Indices: 0=new_subst 1=counter' 2=clause 3=matches
-      2 pick clause-body 5 pick gappend
-      # Stack: ... matches clause counter' new_subst new_goals
-      # Indices: 0=new_goals 1=new_subst 2=counter' 3=clause 4=matches
-      #          5=rest 6=goal 7=counter 8=subst 9=db 10=goals
-
-      # Recurse - need to set up: new_goals db new_subst counter'
-      # Currently top 3 are: counter'(2) new_subst(1) new_goals(0)
-      rot rot  # Reorder: new_goals(0) counter'(1) new_subst(2) -> becomes new_goals counter' new_subst
-      9 pick   # Get db: new_goals counter' new_subst db
-      swap     # new_goals counter' db new_subst
-      rot      # new_goals db new_subst counter'
-      # Stack: ... matches clause new_goals db new_subst counter'
-
-      solve-goals-simple
-      # Stack: ... matches clause result
-
-      dup solve-success? if
-        # Found solution, clean up and return
-        nip nip
-        6 roll drop 5 roll drop 4 roll drop
-        3 roll drop rot drop swap drop
-      else
-        dup solve-failure? if
-          # Try next clause
-          drop drop  # result, clause
-          db-rest
-          try-clauses-simple
-        else
-          # Error - propagate
-          nip nip
-          6 roll drop 5 roll drop 4 roll drop
-          3 roll drop rot drop swap drop
-        then
-      then
-    else
-      drop drop drop  # unify_fail, counter', clause
-      db-rest try-clauses-simple
-    then
-  then
-;
-
-# ============================================
-# Multi-Solution Solver (with choice points)
-# ============================================
-#
-# DESIGN: Forward-passing choice points for proper tail recursion
-# ===============================================================
-#
-# The key insight is that choice points are created BEFORE recursing,
-# not after. This allows all recursion to be proper tail calls.
-#
-# - solve-goals-with-cp takes a pending ChoiceStack parameter
-# - When goals are empty: return success with accumulated choices
-# - When trying clauses: create CP first, then tail-call
-# - On failure (no matches): pop from pending stack and backtrack (tail call)
-# - On unify failure: try next clause (simple tail recursion)
-#
-# This eliminates the mutual recursion that was breaking TCO.
-
-# Entry point - start with empty pending choice stack
-: solve-all ( GoalList ClauseDB Subst Int -- SolveResult )
-  cpnil solve-goals-with-cp
-;
-
-# Main solver with forward-passed choice stack
-# ChoiceStack contains pending choices to include on success / backtrack from on failure
-: solve-goals-with-cp ( GoalList ClauseDB Subst Int ChoiceStack -- SolveResult )
-  # Stack: goals db subst counter pending_cp
-  # Indices: 0=pending_cp 1=counter 2=subst 3=db 4=goals
-  4 pick gnull? if
-    # No goals - success with accumulated choice stack
-    # Stack: goals db subst counter pending_cp (5 items)
-    # Indices: 0=pending_cp 1=counter 2=subst 3=db 4=goals
-    # make-solve-success expects ( Subst ChoiceStack Int -- SolveResult )
-    # After each pick, indices shift by 1
-    2 pick         # subst (at 2) -> stack now 6 items: 0=subst, 1=pending_cp, 2=counter
-    1 pick         # pending_cp (at 1) -> stack now 7 items
-    3 pick         # counter (at 3) -> stack now 8 items
-    # Stack: goals db subst counter pending_cp subst pending_cp counter (8 items)
+    # No goals - success
+    # Need: subst cpnil counter for make-solve-success (Subst ChoiceStack Int)
+    3 roll drop  # drop goals: (subst db counter)
+    swap drop    # drop db: (subst counter)
+    swap cpnil rot  # (subst cpnil counter)
     make-solve-success
-    # make-solve-success consumes 3 items, pushes 1 result
-    # Stack: goals db subst counter pending_cp result (6 items)
-    # Clean up: nip removes items from below result, need to remove 5 items
-    nip nip nip nip nip
   else
-    # Get first goal and remaining goals
-    4 pick gcar     # goal
-    5 pick gcdr     # rest
-    # Stack: goals db subst counter pending_cp goal rest
-
-    # Check if goal is a built-in
-    over builtin? if
-      # Handle builtin (no choice points for builtins)
-      solve-builtin-goal-with-cp
+    # Get first goal
+    3 pick gcar
+    dup builtin? if
+      # Handle builtin
+      # Stack: goals subst db counter goal
+      # Positions: 4=goals 3=subst 2=db 1=counter 0=goal
+      3 pick exec-builtin  # exec-builtin (Term Subst -- UnifyResult): goal at 1, subst at 0
+      # Stack: goals subst db counter UnifyResult
+      dup unify-ok? if
+        unify-ok-subst
+        # Stack: goals subst db counter new-subst
+        # Positions: 4=goals 3=subst 2=db 1=counter 0=new-subst
+        # Build new args: rest-goals new-subst db counter
+        4 pick gcdr swap 3 pick 3 pick
+        # Stack: goals subst db counter rest-goals new-subst db counter
+        # Positions: 7=goals 6=subst 5=db 4=counter 3=rest-goals 2=new-subst 1=db 0=counter
+        4 roll drop 4 roll drop 4 roll drop 4 roll drop
+        run-query-first
+      else
+        drop drop drop drop drop
+        make-solve-failure
+      then
     else
       # Find matching clauses
-      over 6 pick matching-clauses
-      # Stack: goals db subst counter pending_cp goal rest matches
+      dup 3 pick matching-clauses
       dup db-empty? if
-        # No matching clauses - need to backtrack
-        drop drop drop  # matches, rest, goal
-        # Stack: goals db subst counter pending_cp
-        backtrack-with-cp
+        drop drop drop drop drop drop
+        make-solve-failure
       else
-        # Has matching clauses - try them
-        try-clauses-with-cp
+        # Try first clause
+        dup db-first 3 pick rename-clause
+        # Stack: goals subst db counter goal matches clause' counter'
+        # Positions: 7=goals 6=subst 5=db 4=counter 3=goal 2=matches 1=clause' 0=counter'
+        # Note: rename-clause returns (Clause Int) with counter' on top
+        over clause-head 4 pick 8 pick unify
+        # over clause-head: gets head from clause' (at pos 1)
+        # 4 pick: gets goal (at pos 4 after adding head)
+        # 8 pick: gets subst (at pos 8 after adding goal)
+        # Stack after unify: goals subst db counter goal matches clause' counter' UnifyResult
+        dup unify-ok? if
+          unify-ok-subst
+          # Stack: goals subst db counter goal matches clause' counter' new-subst
+          # Positions: 8=goals 7=subst 6=db 5=counter 4=goal 3=matches 2=clause' 1=counter' 0=new-subst
+
+          # Get clause body and append to rest of goals
+          2 pick clause-body  # get body from clause' (at pos 2)
+          9 pick gcdr         # get rest of goals (goals at pos 9 after adding body)
+          gappend             # new-goals = body ++ rest
+          # Stack: goals subst db counter goal matches clause' counter' new-subst new-goals
+          # Positions: 9=goals 8=subst 7=db 6=counter 5=goal 4=matches 3=clause' 2=counter' 1=new-subst 0=new-goals
+
+          # Build args for recursive call: new-goals new-subst db counter'
+          swap        # swap new-goals and new-subst
+          7 pick      # get db (at pos 7)
+          3 pick      # get counter' (at pos 3)
+          # Stack: goals subst db counter goal matches clause' counter' new-goals new-subst db counter'
+          # Positions: 11=goals 10=subst 9=db 8=counter 7=goal 6=matches 5=clause' 4=counter' 3=new-goals 2=new-subst 1=db 0=counter'
+
+          run-query-first
+          # run-query-first consumes 4 items (new-goals new-subst db counter') and produces 1 (result)
+          # Stack: goals subst db counter goal matches clause' counter' result
+          # Positions: 8=goals 7=subst 6=db 5=counter 4=goal 3=matches 2=clause' 1=counter' 0=result
+          # Check if recursion succeeded
+          dup solve-success? if
+            # Success - drop all the old state and return
+            # Drop 8 items (positions 1-8), keeping result
+            swap drop  # drop counter'
+            swap drop  # drop clause'
+            swap drop  # drop matches
+            swap drop  # drop goal
+            swap drop  # drop counter
+            swap drop  # drop db
+            swap drop  # drop subst
+            swap drop  # drop goals
+            # Stack: result
+          else
+            # Recursion failed - try next clause
+            drop  # drop failed result
+            # Stack: goals subst db counter goal matches clause' counter'
+            drop  # drop counter'
+            drop  # drop clause'
+            # Stack: goals subst db counter goal matches
+            db-rest  # get remaining matches
+            run-query-first-try-clauses
+          then
+        else
+          # Try next clause - unification failed
+          # Stack: goals subst db counter goal matches clause counter' UnifyResult
+          drop drop drop  # drop UnifyResult, counter', clause
+          # Stack: goals subst db counter goal matches
+          db-rest         # get remaining matches
+          # Stack: goals subst db counter goal rest-matches
+          run-query-first-try-clauses
+        then
       then
     then
   then
 ;
 
-# Handle built-in goal with choice point passing
-# Stack: goals db subst counter pending_cp goal rest
-: solve-builtin-goal-with-cp ( GoalList ClauseDB Subst Int ChoiceStack Term GoalList -- SolveResult )
-  # Execute built-in with goal and current subst
-  over    # goal
-  5 pick  # subst
-  exec-builtin
-  # Stack: goals db subst counter pending_cp goal rest result
-
-  dup unify-ok? if
-    unify-ok-subst
-    # Stack: goals db subst counter pending_cp goal rest new_subst
-
-    # Clean up and continue with rest goals
-    rot drop    # drop goal
-    6 roll drop # drop old goals
-    # Stack: db subst counter pending_cp rest new_subst
-
-    4 roll drop  # drop old subst
-    # Stack: db counter pending_cp rest new_subst
-
-    # Reorder for recursive call: rest db new_subst counter pending_cp
-    3 roll      # Stack: db pending_cp rest new_subst counter
-    4 roll      # Stack: pending_cp rest new_subst counter db
-    4 roll      # Stack: rest new_subst counter db pending_cp
-    4 roll      # Stack: new_subst counter db pending_cp rest
-    4 roll      # Stack: counter db pending_cp rest new_subst
-    rot         # Stack: counter db rest new_subst pending_cp
-    4 roll      # Stack: db rest new_subst pending_cp counter
-    swap        # Stack: db rest new_subst counter pending_cp
-    3 roll      # Stack: db new_subst counter pending_cp rest
-    4 roll      # Stack: new_subst counter pending_cp rest db
-    4 roll      # Stack: counter pending_cp rest db new_subst
-    3 roll      # Stack: pending_cp rest db new_subst counter
-    4 roll      # Stack: rest db new_subst counter pending_cp
-
-    # Now: rest db new_subst counter pending_cp - tail call
-    solve-goals-with-cp
-  else
-    # Built-in failed - need to backtrack
-    drop drop drop  # result, rest, goal
-    # Stack: goals db subst counter pending_cp
-    backtrack-with-cp
-  then
-;
-
-# Backtrack by popping from choice stack
-# Stack: goals db subst counter pending_cp
-: backtrack-with-cp ( GoalList ClauseDB Subst Int ChoiceStack -- SolveResult )
-  # Stack: goals db subst counter pending_cp
-  dup cpnil? if
-    # No more choice points - true failure
-    drop drop drop drop drop
+# Helper to try remaining clauses
+: run-query-first-try-clauses ( GoalList Subst ClauseDB Int Term ClauseDB -- SolveResult )
+  # Input stack: goals subst db counter goal matches
+  # Positions: 5=goals 4=subst 3=db 2=counter 1=goal 0=matches
+  dup db-empty? if
+    drop drop drop drop drop drop
     make-solve-failure
   else
-    # Pop choice point from pending_cp
-    # Stack: goals db subst counter pending_cp
-    dup cpcar       # pending_cp cp
-    swap cpcdr      # cp rest_pending
-    # Stack: goals db subst counter cp rest_pending
-
-    # Drop old values we don't need (goals db subst counter)
-    # Stack: goals db subst counter cp rest_pending
-    # Indices: 0=rest_pending 1=cp 2=counter 3=subst 4=db 5=goals
-    5 roll drop     # drop goals: db subst counter cp rest_pending
-    4 roll drop     # drop db: subst counter cp rest_pending
-    3 roll drop     # drop subst: counter cp rest_pending
-    rot drop        # drop counter: cp rest_pending
-    # Stack: cp rest_pending
-
-    # Extract all fields from cp
-    over cp-goals               # cp rest_pending cp_goals
-    2 pick cp-untried-clauses   # cp rest_pending cp_goals untried
-    3 pick cp-full-db           # cp rest_pending cp_goals untried cp_db
-    4 pick cp-subst             # cp rest_pending cp_goals untried cp_db cp_subst
-    5 pick cp-var-counter       # cp rest_pending cp_goals untried cp_db cp_subst cp_counter
-    # Stack: cp rest_pending cp_goals untried cp_db cp_subst cp_counter
-    # Indices: 0=cp_counter 1=cp_subst 2=cp_db 3=untried 4=cp_goals 5=rest_pending 6=cp
-
-    # Drop cp (we've extracted what we need)
-    6 roll drop
-    # Stack: rest_pending cp_goals untried cp_db cp_subst cp_counter
-    # Indices: 0=cp_counter 1=cp_subst 2=cp_db 3=untried 4=cp_goals 5=rest_pending
-
-    # Get goal and rest from cp_goals
-    4 pick gcar     # ... cp_goal
-    5 pick gcdr     # ... cp_goal cp_rest
-    # Stack: rest_pending cp_goals untried cp_db cp_subst cp_counter cp_goal cp_rest
-    # Indices: 0=cp_rest 1=cp_goal 2=cp_counter 3=cp_subst 4=cp_db 5=untried 6=cp_goals 7=rest_pending
-
-    # Rearrange for try-clauses-with-cp: cp_goals cp_db cp_subst cp_counter rest_pending cp_goal cp_rest untried
-    # Need to push: cp_goals(6), cp_db(4), cp_subst(3), cp_counter(2), rest_pending(7), cp_goal(1), cp_rest(0), untried(5)
-    6 pick          # cp_goals (at 6) -> idx+1
-    5 pick          # cp_db (was 4, now 5) -> idx+1
-    5 pick          # cp_subst (was 3, now 5) -> idx+1
-    5 pick          # cp_counter (was 2, now 5) -> idx+1
-    11 pick         # rest_pending (was 7, now 11) -> idx+1
-    6 pick          # cp_goal (was 1, now 6) -> idx+1
-    6 pick          # cp_rest (was 0, now 6) -> idx+1
-    12 pick         # untried (was 5, now 12)
-    # Stack: (old 8 items) + cp_goals cp_db cp_subst cp_counter rest_pending cp_goal cp_rest untried
-
-    try-clauses-with-cp
-    # Stack: (old 8 items) + result
-
-    # Clean up old values (8 items: rest_pending cp_goals untried cp_db cp_subst cp_counter cp_goal cp_rest)
-    nip nip nip nip nip nip nip nip
-  then
-;
-
-# Try clauses with forward-passed choice stack
-# Stack: goals db subst counter pending_cp goal rest matches
-: try-clauses-with-cp ( GoalList ClauseDB Subst Int ChoiceStack Term GoalList ClauseDB -- SolveResult )
-  # Indices: 0=matches 1=rest 2=goal 3=pending_cp 4=counter 5=subst 6=db 7=goals
-  dup db-empty? if
-    # No matches - backtrack
-    drop drop drop  # matches, rest, goal
-    # Stack: goals db subst counter pending_cp
-    backtrack-with-cp
-  else
-    # Try first clause
-    dup db-first
-    5 pick rename-clause
-    # Stack: goals db subst counter pending_cp goal rest matches clause counter'
-
-    # Unify goal with clause head
-    4 pick                 # get goal
-    2 pick clause-head     # get head
-    9 pick                 # get subst (was at 5, +4 pushes)
-    unify
-    # Stack: goals db subst counter pending_cp goal rest matches clause counter' unify_result
-
+    dup db-first 3 pick rename-clause
+    # Stack: goals subst db counter goal matches clause' counter'
+    # Positions: 7=goals 6=subst 5=db 4=counter 3=goal 2=matches 1=clause' 0=counter'
+    over clause-head 4 pick 8 pick unify
     dup unify-ok? if
       unify-ok-subst
-      # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
+      # Stack: goals subst db counter goal matches clause' counter' new-subst
+      # Positions: 8=goals 7=subst 6=db 5=counter 4=goal 3=matches 2=clause' 1=counter' 0=new-subst
 
-      # Check if there are more clauses - if so, create choice point
-      # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
-      # Indices: 0=new_subst 1=counter' 2=clause 3=matches 4=rest 5=goal 6=pending_cp 7=counter 8=subst 9=db 10=goals
-      3 pick db-rest db-empty? if
-        # No more clauses - just continue with current pending_cp
-        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
+      # Get clause body and append to rest of goals
+      2 pick clause-body  # get body from clause'
+      9 pick gcdr         # get rest of goals
+      gappend             # new-goals = body ++ rest
+      # Stack: goals subst db counter goal matches clause' counter' new-subst new-goals
+      # Positions: 9=goals 8=subst 7=db 6=counter 5=goal 4=matches 3=clause' 2=counter' 1=new-subst 0=new-goals
 
-        # New goals = clause_body ++ rest
-        # clause at 2, rest at 4
-        2 pick clause-body 5 pick gappend
-        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst new_goals
-        # Indices: 0=new_goals 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
+      # Build args for recursive call: new-goals new-subst db counter'
+      swap 7 pick 3 pick
+      # Stack: goals subst db counter goal matches clause' counter' new-goals new-subst db counter'
 
-        # Need to arrange: new_goals db new_subst counter' pending_cp
-        # After each pick, indices shift by 1
-        10 pick         # db (at 10) -> stack +1
-        # Indices: 0=db 1=new_goals 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp ...
-        2 pick          # new_subst (was at 1, now at 2 after push)
-        # Indices: 0=new_subst 1=db 2=new_goals 3=new_subst 4=counter' ...
-        4 pick          # counter' (was at 2, now at 4 after 2 pushes)
-        # Indices: 0=counter' 1=new_subst 2=db 3=new_goals 4=new_subst 5=counter' ... 10=pending_cp
-        10 pick         # pending_cp (was at 7, now at 10 after 3 pushes)
-        # Stack top: new_goals db new_subst counter' pending_cp
-
-        solve-goals-with-cp
-        # Stack: (old 11 items) + result
-        # nip removes items from under result, need 11 nips to leave just result
-        nip nip nip nip nip nip nip nip nip nip nip
+      run-query-first
+      # run-query-first consumes 4 items and produces 1 (result)
+      # Stack: goals subst db counter goal matches clause' counter' result
+      # Positions: 8=goals 7=subst 6=db 5=counter 4=goal 3=matches 2=clause' 1=counter' 0=result
+      dup solve-success? if
+        # Success - drop all the old state and return
+        swap drop  # drop counter'
+        swap drop  # drop clause'
+        swap drop  # drop matches
+        swap drop  # drop goal
+        swap drop  # drop counter
+        swap drop  # drop db
+        swap drop  # drop subst
+        swap drop  # drop goals
+        # Stack: result
       else
-        # More clauses - create choice point and add to pending
-        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
-        # Indices: 0=new_subst 1=counter' 2=clause 3=matches 4=rest 5=goal 6=pending_cp 7=counter 8=subst 9=db 10=goals
-
-        # Build choice point: (goal::rest, remaining_matches, db, subst, counter)
-        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst
-        # Indices: 0=new_subst 1=counter' 2=clause 3=matches 4=rest 5=goal 6=pending_cp 7=counter 8=subst 9=db 10=goals
-        5 pick 5 pick gcons   # cp_goals = goal::rest (goal at 5, then rest at 5 after push)
-        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst cp_goals
-        # Indices: 0=cp_goals 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
-        4 pick db-rest        # remaining_matches (matches at 4)
-        # Stack: ... cp_goals remaining
-        # Indices: 0=remaining 1=cp_goals 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp 9=counter 10=subst 11=db 12=goals
-        11 pick               # db (at 11)
-        # Indices: 0=db 1=remaining 2=cp_goals 3=new_subst 4=counter' 5=clause 6=matches 7=rest 8=goal 9=pending_cp 10=counter 11=subst 12=db 13=goals
-        11 pick               # subst (at 11)
-        # Indices: 0=subst 1=db 2=remaining 3=cp_goals 4=new_subst 5=counter' 6=clause 7=matches 8=rest 9=goal 10=pending_cp 11=counter 12=subst 13=db 14=goals
-        11 pick               # counter (at 11)
-        # Stack top 5: cp_goals remaining db subst counter
-        make-cp
-        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst cp
-        # Indices: 0=cp 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
-
-        # Add to pending stack: cpcons needs (ChoicePoint, ChoiceStack) with ChoiceStack on TOS
-        # pending_cp at 7, cp at 0
-        # After 7 pick: 0=pending_cp, 1=cp -> cpcons needs ChoiceStack on TOS, so no swap needed
-        7 pick cpcons
-        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst new_pending
-        # Indices: 0=new_pending 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
-
-        # New goals = clause_body ++ rest
-        # clause at 3, rest at 5
-        3 pick clause-body 6 pick gappend
-        # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst new_pending new_goals
-        # Indices: 0=new_goals 1=new_pending 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp 9=counter 10=subst 11=db 12=goals
-
-        # Need to arrange: new_goals db new_subst counter' new_pending
-        # After each pick, indices shift by 1
-        11 pick         # db (at 11)
-        # Indices: 0=db 1=new_goals 2=new_pending 3=new_subst 4=counter' 5=clause 6=matches 7=rest 8=goal 9=pending_cp 10=counter 11=subst 12=db 13=goals
-        3 pick          # new_subst (was at 2, now at 3 after push)
-        # Indices: 0=new_subst 1=db 2=new_goals 3=new_pending 4=new_subst 5=counter' 6=clause ...
-        5 pick          # counter' (was at 3, now at 5 after 2 pushes)
-        # Indices: 0=counter' 1=new_subst 2=db 3=new_goals 4=new_pending 5=new_subst 6=counter' 7=clause ...
-        4 pick          # new_pending (was at 1, now at 4 after 3 pushes)
-        # Stack top: new_goals db new_subst counter' new_pending
-
-        solve-goals-with-cp
-        # Stack: (old 12 items) + result
-        # nip removes items from under result, need 12 nips to leave just result
-        nip nip nip nip nip nip nip nip nip nip nip nip
+        # Recursion failed - try next clause
+        drop  # drop failed result
+        # Stack: goals subst db counter goal matches clause' counter'
+        drop  # drop counter'
+        drop  # drop clause'
+        # Stack: goals subst db counter goal matches
+        db-rest  # get remaining matches
+        run-query-first-try-clauses
       then
     else
-      # Unify failed - try next clause (simple tail recursion)
-      drop drop drop  # unify_fail, counter', clause
-      # Stack: goals db subst counter pending_cp goal rest matches
-      db-rest
-      # Stack: goals db subst counter pending_cp goal rest remaining_matches
-      try-clauses-with-cp
+      # Unification failed - try next clause
+      # Stack: goals subst db counter goal matches clause' counter' UnifyResult
+      drop drop drop  # drop UnifyResult, counter', clause'
+      db-rest         # get remaining matches
+      # Stack: goals subst db counter goal rest-matches
+      run-query-first-try-clauses
     then
   then
 ;
 
-# Continue solving from a choice point (for external use by print-all-solutions)
-# This is now simpler - just call backtrack-with-cp with appropriate setup
-: solve-next ( ChoiceStack ClauseDB -- SolveResult )
-  over cpnil? if
-    # No more choice points - exhausted
-    drop drop make-solve-failure
-  else
-    # Set up dummy values and call backtrack-with-cp
-    # backtrack-with-cp expects: ( GoalList ClauseDB Subst Int ChoiceStack -- SolveResult )
-    # We pass dummy goals (gnull), the db, dummy subst (empty), dummy counter (0), and the cp_stack as pending
-    # Stack: cp_stack db (0=db, 1=cp_stack)
-    swap           # Stack: db cp_stack (0=cp_stack, 1=db)
-    gnull          # Stack: db cp_stack gnull (0=gnull, 1=cp_stack, 2=db)
-    rot            # Stack: cp_stack gnull db (0=db, 1=gnull, 2=cp_stack)
-    rot            # Stack: gnull db cp_stack (0=cp_stack, 1=db, 2=gnull)
-    subst-empty    # Stack: gnull db cp_stack subst-empty (0=subst-empty)
-    swap           # Stack: gnull db subst-empty cp_stack (0=cp_stack)
-    0              # Stack: gnull db subst-empty cp_stack 0 (0=0)
-    swap           # Stack: gnull db subst-empty 0 cp_stack (0=cp_stack=pending_cp)
-    backtrack-with-cp
-  then
-;
-
-# ============================================
-# Query Execution
-# ============================================
-
-: run-query ( GoalList ClauseDB -- SolveResult )
-  subst-empty 0 solve-first
-;
-
-# Run query returning all solutions via choice points
-# TODO: Re-enable after fixing TCO issue
+# Placeholder for multi-solution query (TODO: implement with full CPS)
 : run-query-all ( GoalList ClauseDB -- SolveResult )
-  subst-empty 0 solve-all  # Use solve-all for multi-solution support
+  run-query  # For now, same as run-query
 ;

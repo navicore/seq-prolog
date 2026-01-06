@@ -10,10 +10,26 @@ include "../term"
 # ============================================
 
 # Follow substitution chain to find actual value
-# Simplified: just return term unchanged (single-level only)
+# If term is a variable and bound in subst, recursively dereference
 # Preserves Subst on stack for callers that need it
 : deref ( Term Subst -- Term Subst )
-  # Just return both unchanged for now
+  over tvar? if
+    # Variable - look up in substitution
+    over tvar-id over subst-lookup
+    # Stack: term subst found? value
+    swap if
+      # Found binding - replace term with value and recurse
+      # Stack: term subst value
+      rot drop  # Stack: subst value
+      swap      # Stack: value subst
+      deref     # Recursively dereference
+    else
+      # Not found - keep original variable
+      drop  # drop dummy value from subst-lookup
+    then
+  else
+    # Not a variable - return unchanged
+  then
 ;
 
 # ============================================
@@ -241,11 +257,16 @@ include "../term"
 : apply-subst ( Term Subst -- Term )
   over tvar? if
     over tvar-id over subst-lookup
-    if
-      # Found binding, apply recursively
-      nip nip dup subst-empty apply-subst
+    # Stack: Term Subst Bool BoundTerm
+    swap if
+      # Found binding - resolve recursively with same substitution
+      # Stack: Term Subst BoundTerm
+      rot drop  # Subst BoundTerm (drop original Term)
+      swap      # BoundTerm Subst
+      apply-subst
     else
-      # Not bound, keep variable
+      # Not bound, keep original variable
+      # Stack: Term Subst DummyTerm
       drop drop
     then
   else
