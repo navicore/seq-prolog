@@ -29,10 +29,18 @@ union SourceSpan {
   Make-Span ;
 
 : span? ( SourceSpan -- Bool )
-  variant.tag 1 i.= ;
+  match
+    NoSpan -> false
+    Span -> drop drop drop drop true
+  end
+;
 
 : no-span? ( SourceSpan -- Bool )
-  variant.tag 0 i.= ;
+  match
+    NoSpan -> true
+    Span -> drop drop drop drop false
+  end
+;
 
 : span-start-line ( SourceSpan -- Int )
   0 variant.field-at ;
@@ -138,22 +146,70 @@ union Term {
 # ============================================
 
 : tatom? ( Term -- Bool )
-  variant.tag 0 i.= ;
+  match
+    TAtom -> drop drop true
+    TVar -> drop drop drop false
+    TCompound -> drop drop drop false
+    TInt -> drop drop false
+    TFloat -> drop drop false
+    TList -> drop drop drop false
+  end
+;
 
 : tvar? ( Term -- Bool )
-  variant.tag 1 i.= ;
+  match
+    TAtom -> drop drop false
+    TVar -> drop drop drop true
+    TCompound -> drop drop drop false
+    TInt -> drop drop false
+    TFloat -> drop drop false
+    TList -> drop drop drop false
+  end
+;
 
 : tcompound? ( Term -- Bool )
-  variant.tag 2 i.= ;
+  match
+    TAtom -> drop drop false
+    TVar -> drop drop drop false
+    TCompound -> drop drop drop true
+    TInt -> drop drop false
+    TFloat -> drop drop false
+    TList -> drop drop drop false
+  end
+;
 
 : tint? ( Term -- Bool )
-  variant.tag 3 i.= ;
+  match
+    TAtom -> drop drop false
+    TVar -> drop drop drop false
+    TCompound -> drop drop drop false
+    TInt -> drop drop true
+    TFloat -> drop drop false
+    TList -> drop drop drop false
+  end
+;
 
 : tfloat? ( Term -- Bool )
-  variant.tag 4 i.= ;
+  match
+    TAtom -> drop drop false
+    TVar -> drop drop drop false
+    TCompound -> drop drop drop false
+    TInt -> drop drop false
+    TFloat -> drop drop true
+    TList -> drop drop drop false
+  end
+;
 
 : tlist? ( Term -- Bool )
-  variant.tag 5 i.= ;
+  match
+    TAtom -> drop drop false
+    TVar -> drop drop drop false
+    TCompound -> drop drop drop false
+    TInt -> drop drop false
+    TFloat -> drop drop false
+    TList -> drop drop drop true
+  end
+;
 
 # Check if term is the empty list atom []
 : tempty-list? ( Term -- Bool )
@@ -249,7 +305,11 @@ union Term {
   Make-TLCons ;
 
 : tlnil? ( TermList -- Bool )
-  variant.tag 0 i.= ;
+  match
+    TLNil -> true
+    TLCons -> drop drop false
+  end
+;
 
 : tlcar ( TermList -- Term )
   0 variant.field-at ;
@@ -309,7 +369,11 @@ union GoalList {
   Make-GCons ;
 
 : gnull? ( GoalList -- Bool )
-  variant.tag 0 i.= ;
+  match
+    GNil -> true
+    GCons -> drop drop false
+  end
+;
 
 : gcar ( GoalList -- Term )
   0 variant.field-at ;
@@ -394,7 +458,11 @@ union ClauseDB {
   Make-DBCons ;
 
 : db-empty? ( ClauseDB -- Bool )
-  variant.tag 0 i.= ;
+  match
+    DBEmpty -> true
+    DBCons -> drop drop false
+  end
+;
 
 : db-first ( ClauseDB -- Clause )
   0 variant.field-at ;
@@ -455,7 +523,11 @@ union Subst {
   Make-SubstExtend ;
 
 : subst-empty? ( Subst -- Bool )
-  variant.tag 0 i.= ;
+  match
+    SubstEmpty -> true
+    SubstExtend -> drop drop false
+  end
+;
 
 : subst-binding ( Subst -- Binding )
   0 variant.field-at ;
@@ -487,24 +559,55 @@ union Subst {
 # Choice Points for Backtracking
 # ============================================
 
-union ChoicePoint {
-  CP { goals: GoalList, clauses: ClauseDB, subst: Subst, var_counter: Int }
+# SolveState bundles subst and counter for choice points
+union SolveState {
+  SS { subst: Subst, counter: Int }
 }
 
-: make-cp ( GoalList ClauseDB Subst Int -- ChoicePoint )
-  Make-CP ;
+: make-solve-state ( Subst Int -- SolveState )
+  Make-SS ;
+
+: ss-subst ( SolveState -- Subst )
+  0 variant.field-at ;
+
+: ss-counter ( SolveState -- Int )
+  1 variant.field-at ;
+
+union ChoicePoint {
+  # Choice point for backtracking - saves state to try alternative clauses
+  #
+  # Fields:
+  #   goals: The goal list we're trying to solve (goal::rest format)
+  #   untried_clauses: Remaining clauses to try for the current goal
+  #                    (excludes the clause we already tried successfully)
+  #   full_db: Complete clause database for recursive solving
+  #   state: Substitution and variable counter bundled together
+  CP { goals: GoalList, untried_clauses: ClauseDB, full_db: ClauseDB, state: SolveState }
+}
+
+: make-cp ( GoalList ClauseDB ClauseDB Subst Int -- ChoicePoint )
+  # Args: goals, untried_clauses, full_db, subst, counter
+  make-solve-state Make-CP ;
 
 : cp-goals ( ChoicePoint -- GoalList )
   0 variant.field-at ;
 
-: cp-clauses ( ChoicePoint -- ClauseDB )
+: cp-untried-clauses ( ChoicePoint -- ClauseDB )
+  # Returns the clauses we haven't tried yet for this goal
   1 variant.field-at ;
 
-: cp-subst ( ChoicePoint -- Subst )
+: cp-full-db ( ChoicePoint -- ClauseDB )
+  # Returns the complete clause database (for recursive solving)
   2 variant.field-at ;
 
-: cp-var-counter ( ChoicePoint -- Int )
+: cp-state ( ChoicePoint -- SolveState )
   3 variant.field-at ;
+
+: cp-subst ( ChoicePoint -- Subst )
+  cp-state ss-subst ;
+
+: cp-var-counter ( ChoicePoint -- Int )
+  cp-state ss-counter ;
 
 union ChoiceStack {
   CPNil
@@ -518,7 +621,11 @@ union ChoiceStack {
   Make-CPCons ;
 
 : cpnil? ( ChoiceStack -- Bool )
-  variant.tag 0 i.= ;
+  match
+    CPNil -> true
+    CPCons -> drop drop false
+  end
+;
 
 : cpcar ( ChoiceStack -- ChoicePoint )
   0 variant.field-at ;
@@ -546,13 +653,28 @@ union SolveResult {
   Make-SolveError ;
 
 : solve-success? ( SolveResult -- Bool )
-  variant.tag 0 i.= ;
+  match
+    SolveSuccess -> drop drop drop true
+    SolveFailure -> false
+    SolveError -> drop drop false
+  end
+;
 
 : solve-failure? ( SolveResult -- Bool )
-  variant.tag 1 i.= ;
+  match
+    SolveSuccess -> drop drop drop false
+    SolveFailure -> true
+    SolveError -> drop drop false
+  end
+;
 
 : solve-error? ( SolveResult -- Bool )
-  variant.tag 2 i.= ;
+  match
+    SolveSuccess -> drop drop drop false
+    SolveFailure -> false
+    SolveError -> drop drop true
+  end
+;
 
 : solve-success-subst ( SolveResult -- Subst )
   0 variant.field-at ;
@@ -585,10 +707,18 @@ union UnifyResult {
   Make-UnifyFail ;
 
 : unify-ok? ( UnifyResult -- Bool )
-  variant.tag 0 i.= ;
+  match
+    UnifyOk -> drop true
+    UnifyFail -> false
+  end
+;
 
 : unify-fail? ( UnifyResult -- Bool )
-  variant.tag 1 i.= ;
+  match
+    UnifyOk -> drop false
+    UnifyFail -> true
+  end
+;
 
 : unify-ok-subst ( UnifyResult -- Subst )
   0 variant.field-at ;
@@ -627,16 +757,40 @@ union Token {
   Make-ParseErr ;
 
 : parse-ok-term? ( ParseResult -- Bool )
-  variant.tag 0 i.= ;
+  match
+    ParseOkTerm -> drop drop true
+    ParseOkClause -> drop drop false
+    ParseOkQuery -> drop drop false
+    ParseErr -> drop drop false
+  end
+;
 
 : parse-ok-clause? ( ParseResult -- Bool )
-  variant.tag 1 i.= ;
+  match
+    ParseOkTerm -> drop drop false
+    ParseOkClause -> drop drop true
+    ParseOkQuery -> drop drop false
+    ParseErr -> drop drop false
+  end
+;
 
 : parse-ok-query? ( ParseResult -- Bool )
-  variant.tag 2 i.= ;
+  match
+    ParseOkTerm -> drop drop false
+    ParseOkClause -> drop drop false
+    ParseOkQuery -> drop drop true
+    ParseErr -> drop drop false
+  end
+;
 
 : parse-err? ( ParseResult -- Bool )
-  variant.tag 3 i.= ;
+  match
+    ParseOkTerm -> drop drop false
+    ParseOkClause -> drop drop false
+    ParseOkQuery -> drop drop false
+    ParseErr -> drop drop true
+  end
+;
 
 : parse-term-value ( ParseResult -- Term )
   0 variant.field-at ;
@@ -682,13 +836,28 @@ union ArithResult {
   Make-ArithErr ;
 
 : arith-int? ( ArithResult -- Bool )
-  variant.tag 0 i.= ;
+  match
+    ArithInt -> drop true
+    ArithFloat -> drop false
+    ArithErr -> drop false
+  end
+;
 
 : arith-float? ( ArithResult -- Bool )
-  variant.tag 1 i.= ;
+  match
+    ArithInt -> drop false
+    ArithFloat -> drop true
+    ArithErr -> drop false
+  end
+;
 
 : arith-err? ( ArithResult -- Bool )
-  variant.tag 2 i.= ;
+  match
+    ArithInt -> drop false
+    ArithFloat -> drop false
+    ArithErr -> drop true
+  end
+;
 
 : arith-int-value ( ArithResult -- Int )
   0 variant.field-at ;

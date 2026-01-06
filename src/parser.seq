@@ -56,10 +56,13 @@ include "tokenizer"
     tatom-at
     over make-parse-ok-term
   else
+    # Build error message
     "Expected '" swap string.concat "'" string.concat
-    swap peek-span
+    # Stack: TokenList errorMsg
+    over peek-span
+    # Stack: TokenList errorMsg SourceSpan
     make-parse-err
-    swap drop
+    # Stack: TokenList ParseResult
   then
 ;
 
@@ -317,14 +320,16 @@ include "tokenizer"
     drop false
   else
     dup 0 string.char-at
+    # Stack: String firstChar
     dup is-digit? if
       drop drop true
     else
-      45 i.= if  # '-'
-        string.length 1 i.> if
+      45 i.= if  # '-' (negative number)
+        # Stack: String
+        dup string.length 1 i.> if
           1 string.char-at is-digit?
         else
-          false
+          drop false
         then
       else
         drop false
@@ -558,9 +563,12 @@ include "tokenizer"
 : termlist-from-comma ( Term -- TermList )
   dup tcompound? if
     dup tcompound-functor "," string.equal? if
+      # Comma term: extract first arg, recurse on second
       dup tcompound-args tlcar
+      # Stack: Term firstArg
       swap tcompound-args tlcdr tlcar termlist-from-comma
-      tlcons nip
+      # Stack: firstArg restTermList
+      tlcons
     else
       tlnil tlcons
     then
@@ -763,7 +771,11 @@ union ParseAllResult {
 }
 
 : parse-all-ok? ( ParseAllResult -- Bool )
-  variant.tag 0 i.= ;
+  match
+    ParseAllOk -> drop true
+    ParseAllErr -> drop false
+  end
+;
 
 : parse-all-error ( ParseAllResult -- String )
   0 variant.field-at ;

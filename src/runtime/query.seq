@@ -58,7 +58,7 @@ include "solve"
   then
 ;
 
-# Print solve result in Prolog format
+# Print solve result in Prolog format (single solution)
 : print-solve-result ( SolveResult -- )
   dup solve-success? if
     solve-success-subst print-bindings
@@ -67,6 +67,43 @@ include "solve"
       drop "false." io.write-line
     else
       "Error: " swap solve-error-message string.concat io.write-line
+    then
+  then
+;
+
+# Print all solutions by following choice points
+: print-all-solutions ( SolveResult ClauseDB -- )
+  over solve-success? if
+    # Print this solution
+    over solve-success-subst print-bindings
+
+    # Check for more solutions via choice points
+    over solve-success-cp-stack
+    # Stack: result db cp_stack
+    dup cpnil? if
+      # No more choice points
+      drop drop drop "false." io.write-line
+    else
+      # Has choice points - get next solution
+      # Stack: result db cp_stack
+      over       # copy db: result db cp_stack db
+      solve-next # (ChoiceStack ClauseDB -- SolveResult): result db next_result
+      # Stack: result db next_result
+
+      rot drop   # drop old result: db next_result
+      swap       # Stack: next_result db
+
+      # Recurse (should be TCO)
+      print-all-solutions
+    then
+  else
+    over solve-failure? if
+      # No more solutions
+      drop drop "false." io.write-line
+    else
+      # Error
+      swap "Error: " swap solve-error-message string.concat io.write-line
+      drop
     then
   then
 ;
@@ -91,15 +128,31 @@ include "solve"
 ;
 
 # Execute a query string against a clause database
+# Uses solve-first to avoid infinite loops with recursive rules
 : run-query-from-string ( String ClauseDB -- )
   swap parse-query-string
   # Stack: ClauseDB GoalList success?
   if
     # Stack: ClauseDB GoalList
-    swap run-query
-    print-solve-result
+    over swap          # Stack: ClauseDB ClauseDB GoalList
+    swap run-query     # Stack: ClauseDB SolveResult (single solution)
+    print-single-result
+    drop  # drop ClauseDB
   else
     drop drop "Error: Failed to parse query" io.write-line
+  then
+;
+
+# Print a single result (for use with solve-first)
+: print-single-result ( SolveResult -- )
+  dup solve-success? if
+    solve-success-subst print-bindings
+  else
+    dup solve-failure? if
+      drop "false." io.write-line
+    else
+      "Error: " swap solve-error-message string.concat io.write-line
+    then
   then
 ;
 
