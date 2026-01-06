@@ -10,7 +10,240 @@
 include "term"
 include "runtime/unify"
 include "builtins"
-include "runtime/solve"  # For matching-clauses, SolveResult types, rename-clause
+include "runtime/solve"  # For matching-clauses, SolveResult types
+
+# ============================================
+# Variable Map (for proper renaming)
+# ============================================
+# A simple association list mapping variable names to fresh IDs.
+# This ensures the same name in head and body gets the same ID.
+
+union VarMap {
+  VMEmpty
+  VMCons { name: String, id: Int, rest: VarMap }
+}
+
+: vm-empty ( -- VarMap ) Make-VMEmpty ;
+
+: vm-cons ( String Int VarMap -- VarMap )
+  Make-VMCons ;
+
+: vm-empty? ( VarMap -- Bool )
+  match
+    VMEmpty -> true
+    VMCons -> drop drop drop false
+  end
+;
+
+: vm-name ( VarMap -- String )
+  0 variant.field-at ;
+
+: vm-id ( VarMap -- Int )
+  1 variant.field-at ;
+
+: vm-rest ( VarMap -- VarMap )
+  2 variant.field-at ;
+
+# Lookup name in map, return id or -1 if not found
+: vm-lookup ( String VarMap -- Int )
+  dup vm-empty? if
+    drop drop -1
+  else
+    dup vm-name
+    2 pick string.equal? if
+      nip vm-id
+    else
+      vm-rest vm-lookup
+    then
+  then
+;
+
+# ============================================
+# Proper Clause Renaming (with shared variables)
+# ============================================
+
+# Rename a variable, using the map to ensure consistency
+# ( Term VarMap Int -- Term VarMap Int )
+: rename-var-with-map ( Term VarMap Int -- Term VarMap Int )
+  # Stack: term map counter
+  2 pick tvar-name        # term map counter name
+  2 pick vm-lookup        # term map counter id-or-neg1
+  dup 0 i.< if
+    # Not in map - add new entry
+    drop                  # term map counter
+
+    # Create new-var with name and counter as id
+    2 pick tvar-name      # term map counter name
+    over                  # term map counter name counter
+    tvar                  # term map counter new-var
+
+    # Create new map: vm-cons ( String Int VarMap -- VarMap )
+    3 pick tvar-name      # term map counter new-var name
+    2 pick                # term map counter new-var name counter
+    4 pick                # term map counter new-var name counter map
+    vm-cons               # term map counter new-var map'
+
+    # Increment counter
+    rot                   # term map new-var map' counter
+    1 i.+                 # term map new-var map' counter'
+
+    # Clean up: need new-var map' counter'
+    # Stack: term map new-var map' counter' (5 items)
+    4 roll drop           # map new-var map' counter'
+    3 roll drop           # new-var map' counter'
+  else
+    # Found in map - use existing id
+    # Stack: term map counter id
+    3 pick tvar-name      # term map counter id name
+    swap                  # term map counter name id
+    tvar                  # term map counter new-var
+
+    # Clean up: need new-var map counter
+    # Stack: term map counter new-var (4 items)
+    3 roll drop           # map counter new-var
+    rot rot               # new-var map counter
+  then
+;
+
+# Rename term with map
+: rename-term-with-map ( Term VarMap Int -- Term VarMap Int )
+  2 pick tvar? if
+    rename-var-with-map
+  else
+    2 pick tcompound? if
+      # Stack: term map counter
+      2 pick tcompound-functor   # term map counter functor
+      3 pick tcompound-args      # term map counter functor args
+      3 pick                     # term map counter functor args map
+      3 pick                     # term map counter functor args map counter
+      rename-termlist-with-map   # term map counter functor args' map' counter'
+      # Stack: term map counter functor args' map' counter'
+      # positions: counter'(0), map'(1), args'(2), functor(3), counter(4), map(5), term(6)
+
+      # Get functor and args' to top for tcompound (functor deeper, args' on top)
+      3 roll                     # term map counter args' map' counter' functor
+      3 roll                     # term map counter map' counter' functor args'
+      tcompound                  # term map counter map' counter' term'
+
+      # Clean up: need term' map' counter'
+      # Stack: term map counter map' counter' term' (6 items)
+      5 roll drop                # map counter map' counter' term'
+      4 roll drop                # counter map' counter' term'
+      3 roll drop                # map' counter' term'
+      rot rot                    # term' map' counter'
+    else
+      # Atom or other non-var/non-compound term: return unchanged
+      # Stack is already: term map counter
+    then
+  then
+;
+
+# Rename term list with map
+: rename-termlist-with-map ( TermList VarMap Int -- TermList VarMap Int )
+  2 pick tlnil? if
+    # Empty - return as is
+  else
+    # Stack: list map counter
+    2 pick tlcar                 # list map counter first
+    2 pick                       # list map counter first map
+    2 pick                       # list map counter first map counter
+    rename-term-with-map         # list map counter first' map' counter'
+    # Stack: list map counter first' map' counter' (6 items)
+    5 roll tlcdr                 # map counter first' map' counter' rest
+    2 pick                       # map counter first' map' counter' rest map'
+    2 pick                       # map counter first' map' counter' rest map' counter'
+    rename-termlist-with-map     # map counter first' map' counter' rest' map'' counter''
+    # Stack: map counter first' map' counter' rest' map'' counter'' (8 items)
+    # Get first' (pos 5) to top
+    5 roll                       # map counter map' counter' rest' map'' counter'' first'
+    # After 5 roll: rest' is now at pos 3
+    3 roll                       # map counter map' counter' map'' counter'' first' rest'
+    # Build list' = first' :: rest'
+    tlcons                       # map counter map' counter' map'' counter'' list'
+    # Drop junk (4 items)
+    3 roll drop
+    3 roll drop
+    3 roll drop
+    3 roll drop
+    rot rot                      # list' map'' counter''
+  then
+;
+
+# Rename goals with map
+: rename-goals-with-map ( GoalList VarMap Int -- GoalList VarMap Int )
+  2 pick gnull? if
+    # Empty - return as is
+  else
+    # Stack: goals map counter
+    2 pick gcar                  # goals map counter first
+    2 pick                       # goals map counter first map
+    2 pick                       # goals map counter first map counter
+    rename-term-with-map         # goals map counter first' map' counter'
+    # Stack: goals map counter first' map' counter' (6 items)
+    # pos: 0=counter', 1=map', 2=first', 3=counter, 4=map, 5=goals
+    5 roll gcdr                  # map counter first' map' counter' rest
+    2 pick                       # map counter first' map' counter' rest map'
+    2 pick                       # map counter first' map' counter' rest map' counter'
+    rename-goals-with-map        # map counter first' map' counter' rest' map'' counter''
+    # Stack: map counter first' map' counter' rest' map'' counter'' (8 items)
+    # pos: 0=counter'', 1=map'', 2=rest', 3=counter', 4=map', 5=first', 6=counter, 7=map
+    # Need: goals' map'' counter'' where goals' = first' :: rest'
+
+    # Get first' (pos 5) to top
+    5 roll                       # map counter map' counter' rest' map'' counter'' first'
+    # After 5 roll: pos: 0=first', 1=counter'', 2=map'', 3=rest', 4=counter', 5=map', 6=counter, 7=map
+    # Get rest' (now at pos 3) to top
+    3 roll                       # map counter map' counter' map'' counter'' first' rest'
+    # Build goals' = first' :: rest'
+    gcons                        # map counter map' counter' map'' counter'' goals'
+    # Stack now 7 items: 0=goals', 1=counter'', 2=map'', 3=counter', 4=map', 5=counter, 6=map
+
+    # Drop counter', map', counter, map (positions 3, 4, 5, 6)
+    3 roll drop                  # map counter map' map'' counter'' goals'
+    3 roll drop                  # map counter map'' counter'' goals'
+    3 roll drop                  # map map'' counter'' goals'
+    3 roll drop                  # map'' counter'' goals'
+    rot rot                      # goals' map'' counter''
+  then
+;
+
+# Rename clause with proper variable sharing
+: rename-clause-proper ( Clause Int -- Clause Int )
+  # Stack: clause counter
+  vm-empty                       # clause counter map
+  rot                            # counter map clause
+  dup clause-head                # counter map clause head
+  2 pick                         # counter map clause head map
+  4 pick                         # counter map clause head map counter
+  rename-term-with-map           # counter map clause head' map' counter'
+  # Stack: counter map clause head' map' counter' (6 items)
+  3 roll clause-body             # counter map head' map' counter' body
+  2 pick                         # counter map head' map' counter' body map'
+  2 pick                         # counter map head' map' counter' body map' counter'
+  rename-goals-with-map          # counter map head' map' counter' body' map'' counter''
+  # Stack: counter map head' map' counter' body' map'' counter'' (8 items)
+  # pos: 0=counter'', 1=map'', 2=body', 3=counter', 4=map', 5=head', 6=map, 7=counter
+  # Need: clause' counter'' (where clause' = make-clause head' body')
+
+  # Get head' (pos 5) to top
+  5 roll                         # counter map map' counter' body' map'' counter'' head'
+  # After 5 roll: pos: 0=head', 1=counter'', 2=map'', 3=body', 4=counter', 5=map', 6=map, 7=counter
+  # Get body' (now pos 3) to top
+  3 roll                         # counter map map' counter' map'' counter'' head' body'
+  # make-clause ( Term GoalList -- Clause )
+  make-clause                    # counter map map' counter' map'' counter'' clause'
+  # Stack: 7 items, clause' on top
+
+  # Get counter'' (pos 1) next to clause'
+  swap                           # counter map map' counter' map'' clause' counter''
+  # Stack: 7 items. pos: 6=counter, 5=map, 4=map', 3=counter', 2=map'', 1=clause', 0=counter''
+  # Need to drop 5 items: map, map', counter', map'', counter
+  5 roll drop                    # counter map' counter' map'' clause' counter'' (6 items)
+  4 roll drop                    # counter counter' map'' clause' counter'' (5 items)
+  3 roll drop                    # counter map'' clause' counter'' (4 items)
+  2 roll drop                    # counter clause' counter'' (3 items)
+  2 roll drop                    # clause' counter'' (2 items)
+;
 
 # ============================================
 # Simple Recursive Solver
@@ -110,7 +343,7 @@ include "runtime/solve"  # For matching-clauses, SolveResult types, rename-claus
     # Try first clause
     dup db-first       # get first clause
     3 pick             # get counter
-    rename-clause
+    rename-clause-proper
     # Stack: goals subst db counter goal matches clause' counter'
     swap               # Stack: goals subst db counter goal matches counter' clause'
 
@@ -229,17 +462,13 @@ include "runtime/solve"  # For matching-clauses, SolveResult types, rename-claus
 : test-simple ( -- )
   "=== Simple Recursive Solver Test ===" io.write-line
 
-  # Build database:
+  # Build database with recursive ancestor:
   # parent(tom, mary).
-  # parent(tom, james).
   # parent(mary, ann).
-  # grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+  # ancestor(X, Y) :- parent(X, Y).
+  # ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).
 
   "tom" tatom "mary" tatom tlnil tlcons tlcons
-  "parent" swap tcompound
-  make-fact
-
-  "tom" tatom "james" tatom tlnil tlcons tlcons
   "parent" swap tcompound
   make-fact
 
@@ -247,52 +476,51 @@ include "runtime/solve"  # For matching-clauses, SolveResult types, rename-claus
   "parent" swap tcompound
   make-fact
 
-  # Stack: fact1 fact2 fact3
+  # Stack: fact1 fact2
 
-  # Build grandparent rule: grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
-  # Head: grandparent(X, Z) with X=var 100, Z=var 102
-  # Body: parent(X, Y), parent(Y, Z) with Y=var 101
-  "X" 100 tvar "Z" 102 tvar tlnil tlcons tlcons
-  "grandparent" swap tcompound
-  # Stack: fact1 fact2 fact3 head
+  # NOTE: Add recursive FIRST so that after matching-clauses reverses,
+  # base case will be tried first (avoiding infinite recursion)
 
-  # Body goal 1: parent(X, Y)
+  # ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).  (recursive - add first)
+  "X" 200 tvar "Y" 201 tvar tlnil tlcons tlcons
+  "ancestor" swap tcompound
+  "X" 200 tvar "Z" 202 tvar tlnil tlcons tlcons
+  "parent" swap tcompound
+  "Z" 202 tvar "Y" 201 tvar tlnil tlcons tlcons
+  "ancestor" swap tcompound
+  gnull gcons gcons
+  make-clause
+  # Stack: fact1 fact2 ancestor-recursive
+
+  # ancestor(X, Y) :- parent(X, Y).  (base case - add second, so tried first)
+  "X" 100 tvar "Y" 101 tvar tlnil tlcons tlcons
+  "ancestor" swap tcompound
   "X" 100 tvar "Y" 101 tvar tlnil tlcons tlcons
   "parent" swap tcompound
-  # Stack: fact1 fact2 fact3 head goal1
-
-  # Body goal 2: parent(Y, Z)
-  "Y" 101 tvar "Z" 102 tvar tlnil tlcons tlcons
-  "parent" swap tcompound
-  # Stack: fact1 fact2 fact3 head goal1 goal2
-
-  # Build goal list: [goal1, goal2]
-  gnull gcons gcons
-  # Stack: fact1 fact2 fact3 head body-goals
-
+  gnull gcons
   make-clause
-  # Stack: fact1 fact2 fact3 grandparent-rule
+  # Stack: fact1 fact2 ancestor-recursive ancestor-base
 
   db-empty db-append db-append db-append db-append
   # Stack: db
 
-  "Test 1: parent(tom, X)" io.write-line
-  dup
-  "tom" tatom "X" 0 tvar tlnil tlcons tlcons
-  "parent" swap tcompound
-  gnull gcons
-  swap run-simple-query
-
-  "Test 2: parent(tom, mary) - ground query" io.write-line
+  "Test 1: parent(tom, mary)" io.write-line
   dup
   "tom" tatom "mary" tatom tlnil tlcons tlcons
   "parent" swap tcompound
   gnull gcons
   swap run-simple-query
 
-  "Test 3: grandparent(tom, X)" io.write-line
-  "tom" tatom "X" 0 tvar tlnil tlcons tlcons
-  "grandparent" swap tcompound
+  "Test 2: ancestor(tom, mary) - direct" io.write-line
+  dup
+  "tom" tatom "mary" tatom tlnil tlcons tlcons
+  "ancestor" swap tcompound
+  gnull gcons
+  swap run-simple-query
+
+  "Test 3: ancestor(tom, ann) - via mary" io.write-line
+  "tom" tatom "ann" tatom tlnil tlcons tlcons
+  "ancestor" swap tcompound
   gnull gcons
   swap run-simple-query
 
