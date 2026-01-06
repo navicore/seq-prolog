@@ -1,0 +1,304 @@
+# CPS-Based Prolog Solver - Phase 1: Simple Recursive Version
+#
+# This is a simplified recursive solver that returns SolveResult directly.
+# It solves for the first solution only (like solve-first) but with
+# cleaner implementation as a stepping stone to full CPS.
+#
+# Phase 2 will add answer deduplication.
+# Phase 3 will add proper backtracking via closures.
+
+include "term"
+include "runtime/unify"
+include "builtins"
+include "runtime/solve"  # For matching-clauses, SolveResult types, rename-clause
+
+# ============================================
+# Simple Recursive Solver
+# ============================================
+
+# solve-simple: Solve goals, return first solution
+# ( GoalList Subst ClauseDB Int -- SolveResult Int )
+: solve-simple ( GoalList Subst ClauseDB Int -- SolveResult Int )
+  # Stack: goals subst db counter
+  3 pick gnull? if
+    # No goals - SUCCESS!
+    # Return success with current substitution
+    # Stack: goals subst db counter
+    # Need to produce: SolveResult counter
+    # make-solve-success needs: Subst ChoiceStack Int -- SolveResult
+    nip                  # goals subst counter (drop db)
+    rot drop             # subst counter (drop goals)
+    swap                 # counter subst
+    cpnil                # counter subst cpnil
+    2 pick               # counter subst cpnil counter
+    make-solve-success   # counter SolveResult
+    swap                 # SolveResult counter
+  else
+    # Have goals - solve first one
+    # Stack: goals subst db counter
+    3 pick gcar        # Stack: goals subst db counter first-goal
+
+    # Check if it's a built-in
+    dup builtin? if
+      solve-simple-builtin
+    else
+      solve-simple-user-goal
+    then
+  then
+;
+
+# Solve a built-in predicate
+# Stack: goals subst db counter goal
+: solve-simple-builtin ( GoalList Subst ClauseDB Int Term -- SolveResult Int )
+  # Execute the builtin with current subst
+  3 pick swap        # goals subst db counter subst goal
+  swap exec-builtin  # goals subst db counter UnifyResult
+  # Stack: goals subst db counter UnifyResult
+
+  dup unify-ok? if
+    # Builtin succeeded
+    unify-ok-subst     # new-subst
+    # Stack: goals subst db counter new-subst
+
+    # Continue with remaining goals
+    4 pick gcdr        # rest-goals
+    # Stack: goals subst db counter new-subst rest-goals
+
+    swap               # rest-goals new-subst
+    3 pick             # rest-goals new-subst db
+    3 pick             # rest-goals new-subst db counter
+    # Stack: goals subst db counter rest-goals new-subst db counter
+
+    solve-simple       # Stack: goals subst db counter SolveResult counter'
+
+    # Clean up original args
+    rot drop           # goals subst db SolveResult counter'
+    rot drop           # goals subst SolveResult counter'
+    rot drop           # goals SolveResult counter'
+    rot drop           # SolveResult counter'
+  else
+    # Builtin failed
+    drop               # drop UnifyResult
+    # Stack: goals subst db counter
+    drop drop drop drop
+    "Builtin failed" no-span make-solve-error
+    0                  # SolveResult counter
+  then
+;
+
+# Solve a user-defined goal
+# Stack: goals subst db counter goal
+: solve-simple-user-goal ( GoalList Subst ClauseDB Int Term -- SolveResult Int )
+  # Find matching clauses
+  dup 3 pick matching-clauses
+  # Stack: goals subst db counter goal matches
+
+  # Try the matching clauses
+  try-simple-clauses
+;
+
+# Try matching clauses, return first success
+# Stack: goals subst db counter goal matches
+: try-simple-clauses ( GoalList Subst ClauseDB Int Term ClauseDB -- SolveResult Int )
+  dup db-empty? if
+    # No more clauses - FAIL
+    drop drop          # drop matches, goal
+    drop drop drop drop  # drop counter, db, subst, goals
+    make-solve-failure
+    0                  # SolveResult counter
+  else
+    # Try first clause
+    dup db-first       # get first clause
+    3 pick             # get counter
+    rename-clause
+    # Stack: goals subst db counter goal matches clause' counter'
+    swap               # Stack: goals subst db counter goal matches counter' clause'
+
+    # Unify goal with clause head
+    # Stack: goals subst db counter goal matches counter' clause'
+    # Positions (top=0): 0=clause', 1=counter', 2=matches, 3=goal, 4=counter, 5=db, 6=subst, 7=goals
+    dup clause-head    # clause' head
+    # Stack: goals subst db counter goal matches counter' clause' head
+    # Positions: 0=head, 1=clause', 2=counter', 3=matches, 4=goal, 5=counter, 6=db, 7=subst, 8=goals
+    4 pick             # goal
+    # Stack: goals subst db counter goal matches counter' clause' head goal
+    # Positions: 0=goal, 1=head, 2=clause', 3=counter', 4=matches, 5=goal, 6=counter, 7=db, 8=subst, 9=goals
+    swap               # head goal
+    8 pick             # subst (fixed: was 7, now 8)
+    unify
+    # Stack: goals subst db counter goal matches counter' clause' UnifyResult
+
+    dup unify-ok? if
+      # Unification succeeded!
+      unify-ok-subst   # new-subst
+      # Stack: goals subst db counter goal matches counter' clause' new-subst
+
+      # Build new goal list: clause-body ++ rest-of-goals
+      over clause-body   # clause-body
+      9 pick gcdr        # rest of original goals
+      gappend            # new-goals
+      # Stack: goals subst db counter goal matches counter' clause' new-subst new-goals
+
+      # Call solve-simple recursively
+      swap               # new-goals new-subst
+      7 pick             # new-goals new-subst db
+      4 pick             # new-goals new-subst db counter'
+      # Stack: goals subst db counter goal matches counter' clause' new-goals new-subst db counter'
+
+      solve-simple       # Stack: goals subst db counter goal matches counter' clause' SolveResult counter''
+
+      # Check if we succeeded
+      over solve-success? if
+        # SUCCESS! Clean up and return
+        # Stack: goals subst db counter goal matches counter' clause' SolveResult counter''
+        rot drop         # drop clause'
+        rot drop         # drop counter'
+        rot drop         # drop matches
+        rot drop         # drop goal
+        rot drop         # drop counter
+        rot drop         # drop db
+        rot drop         # drop subst
+        rot drop         # drop goals
+        # Stack: SolveResult counter''
+      else
+        # This clause didn't work, try next
+        # Stack: goals subst db counter goal matches counter' clause' SolveResult counter''
+        drop drop        # drop counter'', SolveResult
+        drop drop        # drop clause', counter'
+        db-rest          # remaining matches
+        # Stack: goals subst db counter goal rest-matches
+        try-simple-clauses
+      then
+    else
+      # Unification failed - try next clause
+      # Stack: goals subst db counter goal matches counter' clause' UnifyResult
+      drop             # drop UnifyResult: goals subst db counter goal matches counter' clause'
+      drop             # drop clause': goals subst db counter goal matches counter'
+      drop             # drop counter': goals subst db counter goal matches
+      db-rest          # remaining matches
+      # Stack: goals subst db counter goal rest-matches
+      try-simple-clauses
+    then
+  then
+;
+
+# ============================================
+# Entry Points
+# ============================================
+
+# Run a query and print the first solution
+: run-simple-query ( GoalList ClauseDB -- )
+  swap               # db goals
+  subst-empty        # db goals subst
+  rot                # goals subst db
+  0                  # goals subst db counter
+
+  solve-simple       # SolveResult counter
+  drop               # drop counter
+
+  # Print result
+  dup solve-success? if
+    solve-success-subst print-simple-subst
+    "." io.write-line
+  else
+    dup solve-failure? if
+      drop "false." io.write-line
+    else
+      "Error: " swap solve-error-message string.concat io.write-line
+    then
+  then
+;
+
+: print-simple-subst ( Subst -- )
+  dup subst-empty? if
+    drop "true" io.write
+  else
+    dup subst-binding
+    dup binding-var-id int->string
+    " = " string.concat
+    swap binding-value term-to-string string.concat
+    io.write-line
+    subst-parent print-simple-subst
+  then
+;
+
+# ============================================
+# Test Harness
+# ============================================
+
+: test-simple ( -- )
+  "=== Simple Recursive Solver Test ===" io.write-line
+
+  # Build database:
+  # parent(tom, mary).
+  # parent(tom, james).
+  # parent(mary, ann).
+  # grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+
+  "tom" tatom "mary" tatom tlnil tlcons tlcons
+  "parent" swap tcompound
+  make-fact
+
+  "tom" tatom "james" tatom tlnil tlcons tlcons
+  "parent" swap tcompound
+  make-fact
+
+  "mary" tatom "ann" tatom tlnil tlcons tlcons
+  "parent" swap tcompound
+  make-fact
+
+  # Stack: fact1 fact2 fact3
+
+  # Build grandparent rule: grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+  # Head: grandparent(X, Z) with X=var 100, Z=var 102
+  # Body: parent(X, Y), parent(Y, Z) with Y=var 101
+  "X" 100 tvar "Z" 102 tvar tlnil tlcons tlcons
+  "grandparent" swap tcompound
+  # Stack: fact1 fact2 fact3 head
+
+  # Body goal 1: parent(X, Y)
+  "X" 100 tvar "Y" 101 tvar tlnil tlcons tlcons
+  "parent" swap tcompound
+  # Stack: fact1 fact2 fact3 head goal1
+
+  # Body goal 2: parent(Y, Z)
+  "Y" 101 tvar "Z" 102 tvar tlnil tlcons tlcons
+  "parent" swap tcompound
+  # Stack: fact1 fact2 fact3 head goal1 goal2
+
+  # Build goal list: [goal1, goal2]
+  gnull gcons gcons
+  # Stack: fact1 fact2 fact3 head body-goals
+
+  make-clause
+  # Stack: fact1 fact2 fact3 grandparent-rule
+
+  db-empty db-append db-append db-append db-append
+  # Stack: db
+
+  "Test 1: parent(tom, X)" io.write-line
+  dup
+  "tom" tatom "X" 0 tvar tlnil tlcons tlcons
+  "parent" swap tcompound
+  gnull gcons
+  swap run-simple-query
+
+  "Test 2: parent(tom, mary) - ground query" io.write-line
+  dup
+  "tom" tatom "mary" tatom tlnil tlcons tlcons
+  "parent" swap tcompound
+  gnull gcons
+  swap run-simple-query
+
+  "Test 3: grandparent(tom, X)" io.write-line
+  "tom" tatom "X" 0 tvar tlnil tlcons tlcons
+  "grandparent" swap tcompound
+  gnull gcons
+  swap run-simple-query
+
+  "=== Test Complete ===" io.write-line
+;
+
+: main ( -- )
+  test-simple
+;
