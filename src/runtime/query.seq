@@ -128,14 +128,14 @@ include "solve"
 ;
 
 # Execute a query string against a clause database
+# Uses solve-first to avoid infinite loops with recursive rules
 : run-query-from-string ( String ClauseDB -- )
   swap parse-query-string
   # Stack: ClauseDB GoalList success?
   if
     # Stack: ClauseDB GoalList
     over swap          # Stack: ClauseDB ClauseDB GoalList
-    swap run-query     # Stack: ClauseDB SolveResult
-    # Print single solution for now (solve-all has bugs)
+    swap run-query     # Stack: ClauseDB SolveResult (single solution)
     print-single-result
     drop  # drop ClauseDB
   else

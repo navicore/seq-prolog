@@ -389,7 +389,7 @@ include "version"
         drop
       then
       over  # Stack: db GoalList db
-      run-query  # Stack: db SolveResult
+      run-query  # Stack: db SolveResult (single solution)
       display-result  # Stack: db
     else
       # Stack: db result

@@ -162,15 +162,15 @@ parent(tom, ann).
 parent(mary, bob).
 MULTISOL
 
-# Test 14: Multiple solutions enumeration (regression for solve-next pick bugs)
-# SKIPPED: Multi-solution support broken - see issue #7
-# https://github.com/navicore/seq-prolog/issues/7
+# Test 14: Multiple solutions enumeration
+# SKIPPED: Default CLI uses solve-first to avoid infinite loops with recursive queries
+# solve-all works for non-recursive queries but is not exposed via CLI yet
 just compile "/tmp/test_multisol.sprolog" > /dev/null 2>&1
-echo "SKIP: Multiple solutions enumeration (issue #7)"
+echo "SKIP: Multiple solutions enumeration (solve-first is default)"
 
 # Test 15: Choice point exhaustion ends with false
-# SKIPPED: Depends on multi-solution support - see issue #7
-echo "SKIP: Choice point exhaustion (issue #7)"
+# SKIPPED: Requires solve-all which is not used by default CLI
+echo "SKIP: Choice point exhaustion (solve-first is default)"
 
 # Test 16: Single solution case still works
 result=$(./target/prolog-out --query "parent(mary, X)" 2>&1) || true

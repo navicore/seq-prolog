@@ -554,13 +554,13 @@ include "../builtins"
 
         # Need to arrange: new_goals db new_subst counter' pending_cp
         # After each pick, indices shift by 1
-        10 pick         # db (at 10) -> stack +1, db now at 11
-        # Indices: 0=db 1=new_goals 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp 9=counter 10=subst 11=db 12=goals
-        3 pick          # new_subst (at 3)
-        # Indices: 0=new_subst 1=db 2=new_goals 3=new_subst 4=counter' 5=clause 6=matches 7=rest 8=goal 9=pending_cp ...
-        5 pick          # counter' (at 5)
-        # Indices: 0=counter' 1=new_subst 2=db 3=new_goals 4=new_subst 5=counter' 6=clause 7=matches 8=rest 9=goal 10=pending_cp ...
-        10 pick         # pending_cp (at 10)
+        10 pick         # db (at 10) -> stack +1
+        # Indices: 0=db 1=new_goals 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp ...
+        2 pick          # new_subst (was at 1, now at 2 after push)
+        # Indices: 0=new_subst 1=db 2=new_goals 3=new_subst 4=counter' ...
+        4 pick          # counter' (was at 2, now at 4 after 2 pushes)
+        # Indices: 0=counter' 1=new_subst 2=db 3=new_goals 4=new_subst 5=counter' ... 10=pending_cp
+        10 pick         # pending_cp (was at 7, now at 10 after 3 pushes)
         # Stack top: new_goals db new_subst counter' pending_cp
 
         solve-goals-with-cp
@@ -591,9 +591,10 @@ include "../builtins"
         # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst cp
         # Indices: 0=cp 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
 
-        # Add to pending stack: cpcons needs (item, stack)
+        # Add to pending stack: cpcons needs (ChoicePoint, ChoiceStack) with ChoiceStack on TOS
         # pending_cp at 7, cp at 0
-        7 pick swap cpcons    # get pending_cp, swap so cp is second, then cpcons
+        # After 7 pick: 0=pending_cp, 1=cp -> cpcons needs ChoiceStack on TOS, so no swap needed
+        7 pick cpcons
         # Stack: goals db subst counter pending_cp goal rest matches clause counter' new_subst new_pending
         # Indices: 0=new_pending 1=new_subst 2=counter' 3=clause 4=matches 5=rest 6=goal 7=pending_cp 8=counter 9=subst 10=db 11=goals
 
@@ -604,13 +605,14 @@ include "../builtins"
         # Indices: 0=new_goals 1=new_pending 2=new_subst 3=counter' 4=clause 5=matches 6=rest 7=goal 8=pending_cp 9=counter 10=subst 11=db 12=goals
 
         # Need to arrange: new_goals db new_subst counter' new_pending
+        # After each pick, indices shift by 1
         11 pick         # db (at 11)
-        # 0=db 1=new_goals 2=new_pending 3=new_subst 4=counter' 5=clause 6=matches 7=rest 8=goal 9=pending_cp 10=counter 11=subst 12=db 13=goals
-        4 pick          # new_subst (at 4)
-        # 0=new_subst 1=db 2=new_goals 3=new_pending 4=new_subst 5=counter' 6=clause ...
-        6 pick          # counter' (at 6)
-        # 0=counter' 1=new_subst 2=db 3=new_goals 4=new_pending 5=new_subst 6=counter' 7=clause ...
-        5 pick          # new_pending (at 5)
+        # Indices: 0=db 1=new_goals 2=new_pending 3=new_subst 4=counter' 5=clause 6=matches 7=rest 8=goal 9=pending_cp 10=counter 11=subst 12=db 13=goals
+        3 pick          # new_subst (was at 2, now at 3 after push)
+        # Indices: 0=new_subst 1=db 2=new_goals 3=new_pending 4=new_subst 5=counter' 6=clause ...
+        5 pick          # counter' (was at 3, now at 5 after 2 pushes)
+        # Indices: 0=counter' 1=new_subst 2=db 3=new_goals 4=new_pending 5=new_subst 6=counter' 7=clause ...
+        4 pick          # new_pending (was at 1, now at 4 after 3 pushes)
         # Stack top: new_goals db new_subst counter' new_pending
 
         solve-goals-with-cp
@@ -637,16 +639,17 @@ include "../builtins"
     drop drop make-solve-failure
   else
     # Set up dummy values and call backtrack-with-cp
-    # backtrack-with-cp expects: goals db subst counter pending_cp
+    # backtrack-with-cp expects: ( GoalList ClauseDB Subst Int ChoiceStack -- SolveResult )
     # We pass dummy goals (gnull), the db, dummy subst (empty), dummy counter (0), and the cp_stack as pending
-    # Stack: cp_stack db
-    gnull          # dummy goals
-    rot            # Stack: gnull cp_stack db
-    swap           # Stack: gnull db cp_stack
-    subst-empty    # dummy subst
-    swap           # Stack: gnull db subst-empty cp_stack
-    0              # dummy counter
-    swap           # Stack: gnull db subst-empty 0 cp_stack (= pending_cp)
+    # Stack: cp_stack db (0=db, 1=cp_stack)
+    swap           # Stack: db cp_stack (0=cp_stack, 1=db)
+    gnull          # Stack: db cp_stack gnull (0=gnull, 1=cp_stack, 2=db)
+    rot            # Stack: cp_stack gnull db (0=db, 1=gnull, 2=cp_stack)
+    rot            # Stack: gnull db cp_stack (0=cp_stack, 1=db, 2=gnull)
+    subst-empty    # Stack: gnull db cp_stack subst-empty (0=subst-empty)
+    swap           # Stack: gnull db subst-empty cp_stack (0=cp_stack)
+    0              # Stack: gnull db subst-empty cp_stack 0 (0=0)
+    swap           # Stack: gnull db subst-empty 0 cp_stack (0=cp_stack=pending_cp)
     backtrack-with-cp
   then
 ;
