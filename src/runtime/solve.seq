@@ -291,199 +291,153 @@ union VarMap {
 ;
 
 # ============================================
-# Query Interface
+# Simple Recursive Solver (First Solution)
 # ============================================
 #
-# TODO: Implement full CPS solver with closures for backtracking
-# For now, using simple recursive solver (run-query-first)
+# This implements a straightforward first-solution finder.
+# For full CPS with backtracking, we can extend this later.
 
-# Run a query, print first solution
+# Entry point for queries
 : run-query ( GoalList ClauseDB -- SolveResult )
-  # For now, use a simple wrapper that captures result
-  subst-empty swap  # goals subst db
-  rot               # subst db goals
-  rot               # db goals subst
-  rot               # goals subst db
-  1000              # counter (offset to avoid query var collision)
-  run-query-first
+  swap               # Stack: db goals
+  subst-empty        # Stack: db goals subst
+  rot                # Stack: goals subst db
+  1000               # Stack: goals subst db counter
+  solve-first
 ;
 
-# Simple first-solution finder (non-CPS for now, will convert)
-: run-query-first ( GoalList Subst ClauseDB Int -- SolveResult )
+# Find first solution
+: solve-first ( GoalList Subst ClauseDB Int -- SolveResult )
   # Stack: goals subst db counter
-  # Positions: 3=goals 2=subst 1=db 0=counter
+  # Indices: 3=goals 2=subst 1=db 0=counter
+
   3 pick gnull? if
-    # No goals - success
-    # Need: subst cpnil counter for make-solve-success (Subst ChoiceStack Int)
-    3 roll drop  # drop goals: (subst db counter)
-    swap drop    # drop db: (subst counter)
-    swap cpnil rot  # (subst cpnil counter)
-    make-solve-success
+    # No goals - success!
+    drop drop nip    # drop counter, db, goals; keep subst
+    cpnil 0 make-solve-success
   else
-    # Get first goal
-    3 pick gcar
+    # Have goals - get first goal
+    3 pick gcar      # Stack: goals subst db counter goal
+
     dup builtin? if
       # Handle builtin
-      # Stack: goals subst db counter goal
-      # Positions: 4=goals 3=subst 2=db 1=counter 0=goal
-      3 pick exec-builtin  # exec-builtin (Term Subst -- UnifyResult): goal at 1, subst at 0
-      # Stack: goals subst db counter UnifyResult
+      3 pick         # get subst (index 3 because goal is on top)
+      exec-builtin   # Stack: goals subst db counter result
       dup unify-ok? if
-        unify-ok-subst
-        # Stack: goals subst db counter new-subst
-        # Positions: 4=goals 3=subst 2=db 1=counter 0=new-subst
-        # Build new args: rest-goals new-subst db counter
-        4 pick gcdr swap 3 pick 3 pick
-        # Stack: goals subst db counter rest-goals new-subst db counter
-        # Positions: 7=goals 6=subst 5=db 4=counter 3=rest-goals 2=new-subst 1=db 0=counter
-        4 roll drop 4 roll drop 4 roll drop 4 roll drop
-        run-query-first
+        unify-ok-subst   # Stack: goals subst db counter new-subst
+        # Continue with rest of goals
+        4 pick gcdr      # Stack: goals subst db counter new-subst rest-goals
+        4 roll drop      # drop old subst; Stack: goals db counter new-subst rest-goals
+        4 roll drop      # drop old goals; Stack: db counter new-subst rest-goals
+        # Reorder to: rest-goals new-subst db counter
+        swap             # Stack: db counter rest-goals new-subst
+        3 roll           # Stack: counter rest-goals new-subst db
+        3 roll           # Stack: rest-goals new-subst db counter
+        solve-first
       else
-        drop drop drop drop drop
-        make-solve-failure
+        # Builtin failed
+        drop drop drop drop drop make-solve-failure
       then
     else
-      # Find matching clauses
-      dup 3 pick matching-clauses
-      dup db-empty? if
-        drop drop drop drop drop drop
-        make-solve-failure
-      else
-        # Try first clause
-        dup db-first 3 pick rename-clause
-        # Stack: goals subst db counter goal matches clause' counter'
-        # Positions: 7=goals 6=subst 5=db 4=counter 3=goal 2=matches 1=clause' 0=counter'
-        # Note: rename-clause returns (Clause Int) with counter' on top
-        over clause-head 4 pick 8 pick unify
-        # over clause-head: gets head from clause' (at pos 1)
-        # 4 pick: gets goal (at pos 4 after adding head)
-        # 8 pick: gets subst (at pos 8 after adding goal)
-        # Stack after unify: goals subst db counter goal matches clause' counter' UnifyResult
-        dup unify-ok? if
-          unify-ok-subst
-          # Stack: goals subst db counter goal matches clause' counter' new-subst
-          # Positions: 8=goals 7=subst 6=db 5=counter 4=goal 3=matches 2=clause' 1=counter' 0=new-subst
-
-          # Get clause body and append to rest of goals
-          2 pick clause-body  # get body from clause' (at pos 2)
-          9 pick gcdr         # get rest of goals (goals at pos 9 after adding body)
-          gappend             # new-goals = body ++ rest
-          # Stack: goals subst db counter goal matches clause' counter' new-subst new-goals
-          # Positions: 9=goals 8=subst 7=db 6=counter 5=goal 4=matches 3=clause' 2=counter' 1=new-subst 0=new-goals
-
-          # Build args for recursive call: new-goals new-subst db counter'
-          swap        # swap new-goals and new-subst
-          7 pick      # get db (at pos 7)
-          3 pick      # get counter' (at pos 3)
-          # Stack: goals subst db counter goal matches clause' counter' new-goals new-subst db counter'
-          # Positions: 11=goals 10=subst 9=db 8=counter 7=goal 6=matches 5=clause' 4=counter' 3=new-goals 2=new-subst 1=db 0=counter'
-
-          run-query-first
-          # run-query-first consumes 4 items (new-goals new-subst db counter') and produces 1 (result)
-          # Stack: goals subst db counter goal matches clause' counter' result
-          # Positions: 8=goals 7=subst 6=db 5=counter 4=goal 3=matches 2=clause' 1=counter' 0=result
-          # Check if recursion succeeded
-          dup solve-success? if
-            # Success - drop all the old state and return
-            # Drop 8 items (positions 1-8), keeping result
-            swap drop  # drop counter'
-            swap drop  # drop clause'
-            swap drop  # drop matches
-            swap drop  # drop goal
-            swap drop  # drop counter
-            swap drop  # drop db
-            swap drop  # drop subst
-            swap drop  # drop goals
-            # Stack: result
-          else
-            # Recursion failed - try next clause
-            drop  # drop failed result
-            # Stack: goals subst db counter goal matches clause' counter'
-            drop  # drop counter'
-            drop  # drop clause'
-            # Stack: goals subst db counter goal matches
-            db-rest  # get remaining matches
-            run-query-first-try-clauses
-          then
-        else
-          # Try next clause - unification failed
-          # Stack: goals subst db counter goal matches clause counter' UnifyResult
-          drop drop drop  # drop UnifyResult, counter', clause
-          # Stack: goals subst db counter goal matches
-          db-rest         # get remaining matches
-          # Stack: goals subst db counter goal rest-matches
-          run-query-first-try-clauses
-        then
-      then
+      # User predicate - find matching clauses
+      # Stack: goals subst db counter goal (5 items)
+      # Indices: 4=goals, 3=subst, 2=db, 1=counter, 0=goal
+      2 pick           # get db (at index 2)
+      # Stack: goals subst db counter goal db (6 items)
+      matching-clauses # (Term ClauseDB -- ClauseDB) consumes goal and db
+      # Stack: goals subst db counter matching (5 items)
+      # Now need to call try-first-match ( GoalList Subst ClauseDB Int ClauseDB -- SolveResult )
+      # which is exactly what we have: goals subst db counter matching
+      try-first-match
     then
   then
 ;
 
-# Helper to try remaining clauses
-: run-query-first-try-clauses ( GoalList Subst ClauseDB Int Term ClauseDB -- SolveResult )
-  # Input stack: goals subst db counter goal matches
-  # Positions: 5=goals 4=subst 3=db 2=counter 1=goal 0=matches
+# Try matching clauses until one succeeds
+: try-first-match ( GoalList Subst ClauseDB Int ClauseDB -- SolveResult )
+  # Stack: goals subst db counter matching (5 items)
   dup db-empty? if
-    drop drop drop drop drop drop
-    make-solve-failure
+    # No matching clauses - fail
+    drop drop drop drop drop make-solve-failure
   else
-    dup db-first 3 pick rename-clause
-    # Stack: goals subst db counter goal matches clause' counter'
-    # Positions: 7=goals 6=subst 5=db 4=counter 3=goal 2=matches 1=clause' 0=counter'
-    over clause-head 4 pick 8 pick unify
+    # Get first clause and rename
+    dup db-first     # Stack: goals subst db counter matching clause (6 items)
+    2 pick           # get counter (index 2 with clause on top: 5=goals 4=subst 3=db 2=counter 1=matching 0=clause)
+    rename-clause    # (Clause Int -- Clause Int)
+    # Stack: goals subst db counter matching renamed new-counter (7 items)
+
+    # Try to unify goal with clause head
+    over clause-head  # get head from renamed
+    # Stack: goals subst db counter matching renamed new-counter head (8 items)
+    7 pick gcar       # get first goal from goals (index 7)
+    # Stack: goals subst db counter matching renamed new-counter head goal (9 items)
+    7 pick            # get subst (index 7: 8=goals 7=subst ...)
+    # Stack: goals subst db counter matching renamed new-counter head goal subst (10 items)
+    unify
+    # Stack: goals subst db counter matching renamed new-counter result (8 items)
+
     dup unify-ok? if
+      # Unification succeeded
       unify-ok-subst
-      # Stack: goals subst db counter goal matches clause' counter' new-subst
-      # Positions: 8=goals 7=subst 6=db 5=counter 4=goal 3=matches 2=clause' 1=counter' 0=new-subst
+      # Stack: goals subst db counter matching renamed new-counter new-subst (8 items)
 
-      # Get clause body and append to rest of goals
-      2 pick clause-body  # get body from clause'
-      9 pick gcdr         # get rest of goals
-      gappend             # new-goals = body ++ rest
-      # Stack: goals subst db counter goal matches clause' counter' new-subst new-goals
-      # Positions: 9=goals 8=subst 7=db 6=counter 5=goal 4=matches 3=clause' 2=counter' 1=new-subst 0=new-goals
+      # Get body and rest-goals for combined
+      2 pick clause-body  # renamed at index 2
+      # Stack: goals subst db counter matching renamed new-counter new-subst body (9 items)
+      8 pick gcdr         # goals at index 8
+      # Stack: goals subst db counter matching renamed new-counter new-subst body rest (10 items)
+      gappend
+      # Stack: goals subst db counter matching renamed new-counter new-subst combined (9 items)
 
-      # Build args for recursive call: new-goals new-subst db counter'
-      swap 7 pick 3 pick
-      # Stack: goals subst db counter goal matches clause' counter' new-goals new-subst db counter'
-
-      run-query-first
-      # run-query-first consumes 4 items and produces 1 (result)
-      # Stack: goals subst db counter goal matches clause' counter' result
-      # Positions: 8=goals 7=subst 6=db 5=counter 4=goal 3=matches 2=clause' 1=counter' 0=result
-      dup solve-success? if
-        # Success - drop all the old state and return
-        swap drop  # drop counter'
-        swap drop  # drop clause'
-        swap drop  # drop matches
-        swap drop  # drop goal
-        swap drop  # drop counter
-        swap drop  # drop db
-        swap drop  # drop subst
-        swap drop  # drop goals
-        # Stack: result
-      else
-        # Recursion failed - try next clause
-        drop  # drop failed result
-        # Stack: goals subst db counter goal matches clause' counter'
-        drop  # drop counter'
-        drop  # drop clause'
-        # Stack: goals subst db counter goal matches
-        db-rest  # get remaining matches
-        run-query-first-try-clauses
-      then
+      # Extract what we need: combined(0), new-subst(1), db(6), new-counter(2)
+      # Then call solve-first with: combined new-subst db new-counter
+      # Use helper to cleanly extract and reorder
+      try-first-match-continue
     else
       # Unification failed - try next clause
-      # Stack: goals subst db counter goal matches clause' counter' UnifyResult
-      drop drop drop  # drop UnifyResult, counter', clause'
-      db-rest         # get remaining matches
-      # Stack: goals subst db counter goal rest-matches
-      run-query-first-try-clauses
+      drop             # result
+      drop             # new-counter
+      drop             # renamed
+      db-rest          # rest of matching
+      try-first-match
     then
   then
 ;
 
-# Placeholder for multi-solution query (TODO: implement with full CPS)
+# Helper to extract values and call solve-first
+# Stack in: goals subst db counter matching renamed new-counter new-subst combined (9 items)
+# Stack out: (calls solve-first with combined new-subst db new-counter)
+: try-first-match-continue ( GoalList Subst ClauseDB Int ClauseDB Clause Int Subst GoalList -- SolveResult )
+  # Indices: 8=goals 7=subst 6=db 5=counter 4=matching 3=renamed 2=new-counter 1=new-subst 0=combined
+  # Need for solve-first: combined new-subst db new-counter
+
+  # Strategy: copy what we need to top, then drop the rest
+  dup              # combined -> index 0
+  2 pick           # new-subst (was at 1, now at 2 after dup)
+  8 pick           # db (was at 6, now at 8 after 2 additions)
+  5 pick           # new-counter (was at 2, now at 5 after 3 additions)
+  # Stack (13 items): goals subst db counter matching renamed new-counter new-subst combined combined' new-subst' db' new-counter'
+  # Indices: 12=goals 11=subst 10=db 9=counter 8=matching 7=renamed 6=new-counter 5=new-subst 4=combined 3=combined' 2=new-subst' 1=db' 0=new-counter'
+
+  # Drop original 9 items (indices 4-12)
+  # Each roll+drop reduces stack by 1
+  12 roll drop     # goals (after: 12 items, indices 0-11)
+  11 roll drop     # subst (after: 11 items)
+  10 roll drop     # db-old (after: 10 items)
+  9 roll drop      # counter (after: 9 items)
+  8 roll drop      # matching (after: 8 items)
+  7 roll drop      # renamed (after: 7 items)
+  6 roll drop      # new-counter-old (after: 6 items)
+  5 roll drop      # new-subst-old (after: 5 items)
+  4 roll drop      # combined-old (after: 4 items)
+  # Stack: combined' new-subst' db' new-counter' (4 items)
+  # But solve-first expects: goals subst db counter
+  # We have: combined new-subst db new-counter - that's correct!
+
+  solve-first
+;
+
+# Multi-solution query - for now just returns first
 : run-query-all ( GoalList ClauseDB -- SolveResult )
-  run-query  # For now, same as run-query
+  run-query
 ;

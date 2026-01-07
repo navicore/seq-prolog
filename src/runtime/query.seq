@@ -273,10 +273,8 @@ include "solve"
 # Query variables are assigned IDs 0, 1, 2, etc.
 # Clause renaming starts at 1000 to avoid collisions.
 : run-query-offset ( GoalList ClauseDB -- SolveResult )
-  # Input: GoalList ClauseDB
-  # run-query-first expects: GoalList Subst ClauseDB Int
-  # Build: GoalList ClauseDB -> GoalList ClauseDB Subst -> GoalList Subst ClauseDB -> GoalList Subst ClauseDB Int
-  subst-empty swap 1000 run-query-first
+  # run-query handles the setup internally
+  run-query
 ;
 
 # Print a single result with variable names (for use with solve-first)
