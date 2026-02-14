@@ -365,4 +365,7 @@ include "solve"
   "  --query <query>      Execute a Prolog query (first solution)" io.write-line
   "  --query-all <query>  Execute a Prolog query (all solutions)" io.write-line
   "  --help, -h           Show this help" io.write-line
+  "" io.write-line
+  "Note: --query-all may loop on recursive rules (e.g. ancestor)." io.write-line
+  "Use --query for safe first-solution mode with recursive predicates." io.write-line
 ;
