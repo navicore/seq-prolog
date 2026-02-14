@@ -52,24 +52,73 @@ just compile test.sprolog
 
 ---
 
-## Phase 2: Multiple Solutions (Current Priority)
+## Phase 2: Multiple Solutions ✅ COMPLETE
 
 **Goal**: Backtracking to enumerate all solutions.
 
+| Task | Description | Status |
+|------|-------------|--------|
+| Choice points | Save/restore state for backtracking | ✅ Done |
+| Solution enumeration | Return all matching substitutions | ✅ Done |
+| Exhaustion detection | Know when no more solutions exist | ✅ Done |
+| `--query-all` flag | Enumerate all solutions from CLI | ✅ Done |
+| `--query` flag | First-solution only (safe for recursive rules) | ✅ Done |
+
+**Implementation**: ChoiceStack-threaded solver replaces CPS. Choice points
+are pushed when multiple clauses match a goal, enabling backtracking via
+`solve-next`. The REPL also iterates all solutions automatically.
+
+**Example**:
+```bash
+./target/prolog-out --query-all "parent(tom, X)"
+# X = mary
+# .
+# X = james
+# .
+# X = ann
+# .
+# false.
+```
+
+---
+
+## Phase 2.5: Operator Parsing (Current Priority)
+
+**Goal**: Parse infix operators in `.sprolog` files and `--query` strings so
+the existing arithmetic/comparison builtins are usable from compiled programs.
+
+**Context**: The runtime already supports `is/2`, `</2`, `>/2`, `=</2`,
+`>=/2`, `=:=/2`, `=\=/2`, `=/2`, and `\=/2` as builtins. However, the parser
+only handles standard functor syntax (`f(x, y)`), not infix operator syntax
+(`X is Y + Z`). This means compiled `.sprolog` files cannot contain rules
+involving arithmetic or comparisons - a prerequisite for any real knowledge
+base with numeric thresholds or computed values.
+
 | Task | Description |
 |------|-------------|
-| Choice points | Save/restore state for backtracking |
-| Solution enumeration | Return all matching substitutions |
-| Exhaustion detection | Know when no more solutions exist |
+| Operator precedence table | Standard Prolog precedences (1200 down to 200) |
+| Infix parsing in clauses | `X is Y + Z` parses as `is(X, +(Y, Z))` in `.sprolog` files |
+| Infix parsing in queries | Same support in `--query` / `--query-all` strings |
+| Comparison operators | `<`, `>`, `=<`, `>=`, `=:=`, `=\=` in clause bodies |
+| Unification operators | `=`, `\=` in clause bodies |
+| Arithmetic operators | `+`, `-`, `*`, `/`, `mod` as term constructors |
 
 **Acceptance**:
 ```bash
-./locomotive-maint --query "component(engine_123, X)"
-# X = turbocharger
-# X = air_filter
-# X = fuel_pump
-# false.
+# This .sprolog file should compile and work:
+# threshold(engine_123, 5000).
+# needs_service(E) :- threshold(E, T), T > 4000.
+./target/prolog-out --query "needs_service(engine_123)"
+# true.
+
+# Arithmetic in queries:
+./target/prolog-out --query "X is 2 + 3"
+# X = 5
+# .
 ```
+
+**Scope note**: This is a parser-only change. No runtime modifications needed -
+all operator builtins are already implemented and tested via the REPL.
 
 ---
 
@@ -119,7 +168,7 @@ just compile test.sprolog
 | Negation-as-failure | `\+ goal` succeeds if goal fails |
 | Cut (`!`) | Prune choice points |
 | List predicates | `member`, `append`, `length`, `findall` |
-| Arithmetic enhancements | More operators, floats |
+| Arithmetic enhancements | Additional operators, floats (parsing done in Phase 2.5) |
 
 ---
 
@@ -190,7 +239,7 @@ Compiled index:
 
 ## Getting Started
 
-Current focus: **Phase 2 - Multiple Solutions**
+Current focus: **Phase 2.5 - Operator Parsing**
 
 ```bash
 # Build compiler
@@ -199,9 +248,14 @@ just build
 # Compile a Prolog file to executable
 just compile examples/family.sprolog
 
-# Run queries
-./target/prolog-out --query "parent(tom, mary)"    # true.
-./target/prolog-out --query "parent(tom, X)"       # 0 = mary
+# Run queries (first solution)
+./target/prolog-out --query "parent(tom, mary)"     # true.
+./target/prolog-out --query "parent(tom, X)"        # X = mary
+
+# Run queries (all solutions)
+./target/prolog-out --query-all "parent(tom, X)"    # X = mary, X = james, X = ann, false.
+
+# Recursive rules
 ./target/prolog-out --query "grandparent(tom, ann)" # succeeds with bindings
 ./target/prolog-out --query "ancestor(tom, ann)"    # recursive rules work
 

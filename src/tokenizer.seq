@@ -911,9 +911,10 @@ union TokState {
     " @ " string.concat
     swap tok-span
     dup span? if
-      dup span-start-line int->string string.concat
-      ":" string.concat
-      swap span-start-col int->string string.concat
+      dup span-start-line int->string
+      swap span-start-col int->string
+      ":" swap string.concat string.concat
+      string.concat
     else
       drop "<no-span>" string.concat
     then

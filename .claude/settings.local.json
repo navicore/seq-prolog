@@ -4,7 +4,11 @@
       "Bash(find:*)",
       "Bash(just build:*)",
       "Bash(grep:*)",
-      "Bash(seqc build:*)"
+      "Bash(seqc build:*)",
+      "Bash(just compile:*)",
+      "Bash(./target/prolog-out:*)",
+      "Bash(seqc lint:*)",
+      "Bash(just ci:*)"
     ]
   }
 }

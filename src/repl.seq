@@ -204,7 +204,8 @@ include "version"
 : parse-query-tokens ( TokenList Int -- ParseResult TokenList Int )
   swap tcdr swap  # skip ?-
   # Stack: tokens_after_qmark counter
-  parse-term-with-counter
+  # Use parse-goals-with-counter to handle comma-separated goals
+  parse-goals-with-counter
   # Stack: ParseResult counter
   over parse-ok-term? if
     over parse-term-remaining  # get remaining tokens from term parse
@@ -305,8 +306,8 @@ include "version"
         else
           # Body parse failed
           # Stack: HeadTerm BodyResult counter
-          nip  # Stack: HeadTerm BodyResult
-          nip  # Stack: BodyResult (the error)
+          drop  # drop counter: HeadTerm BodyResult
+          nip   # drop HeadTerm: BodyResult (the error)
           dup parse-term-remaining  # Get remaining tokens
           # Stack: BodyResult remaining
           0     # Stack: BodyResult remaining counter
@@ -325,8 +326,7 @@ include "version"
     # Stack: ParseResult counter
     over parse-term-remaining  # Get remaining from failed result
     # Stack: ParseResult counter remaining
-    rot rot  # Stack: remaining ParseResult counter
-    swap rot  # Stack: ParseResult remaining counter
+    swap  # Stack: ParseResult remaining counter
   then
 ;
 
@@ -389,8 +389,11 @@ include "version"
         drop
       then
       over  # Stack: db GoalList db
-      run-query  # Stack: db SolveResult (single solution)
-      display-result  # Stack: db
+      dup rot  # Stack: db db GoalList db
+      run-query-all  # Stack: db db SolveResult ChoiceStack
+      rot  # Stack: db SolveResult ChoiceStack db
+      drop  # Stack: db SolveResult ChoiceStack
+      display-all-solutions  # Stack: db
     else
       # Stack: db result
       parse-err-message  # Stack: db message
@@ -404,34 +407,27 @@ include "version"
 # Result Display
 # ============================================
 
-# Display all solutions by looping through choice points
-: display-all-solutions ( SolveResult ClauseDB -- )
-  # Stack: SolveResult ClauseDB (ClauseDB on top)
-  swap  # Stack: ClauseDB SolveResult
-  dup solve-success? if
+# Display all solutions by iterating ChoiceStack
+: display-all-solutions ( SolveResult ChoiceStack -- )
+  over solve-success? if
     # Display this solution
-    dup solve-success-subst
+    over solve-success-subst
     dup subst-empty? if
       drop "true." io.write-line
     else
       display-bindings
     then
-    # Stack: ClauseDB SolveResult
-    # Get choice stack and try for more solutions
-    dup solve-success-cp-stack  # Stack: ClauseDB SolveResult cp_stack
-    nip                         # Stack: ClauseDB cp_stack (drop SolveResult)
-    over                        # Stack: ClauseDB cp_stack ClauseDB
-    solve-next                  # Stack: ClauseDB next_result
-    over                        # Stack: ClauseDB next_result ClauseDB
-    display-all-solutions       # Recurse - pops next_result ClauseDB
-    # Stack: ClauseDB
-    drop                        # Clean up remaining ClauseDB
+    # Stack: result cs
+    swap drop    # drop old result
+    # Stack: cs
+    solve-next   # Stack: new-result new-cs
+    display-all-solutions
   else
+    drop  # drop cs
     dup solve-failure? if
-      drop drop  # drop result and db
+      drop "false." io.write-line
     else
       "Error: " swap solve-error-message string.concat io.write-line
-      drop  # drop db
     then
   then
 ;
@@ -448,7 +444,7 @@ include "version"
     dup solve-failure? if
       drop "false." io.write-line
     else
-      "Error: " solve-error-message string.concat io.write-line
+      solve-error-message "Error: " swap string.concat io.write-line
     then
   then
 ;

@@ -7,27 +7,91 @@ include "../parser"
 include "solve"
 
 # ============================================
+# Query Variable Tracking
+# ============================================
+
+# Extract variables from a term, adding to VarMap
+# Uses VarMap from solve.seq (already included)
+: extract-vars-from-term ( Term VarMap -- VarMap )
+  over tvar? if
+    # Variable - add to map if not already present
+    over tvar-name over vm-lookup
+    0 i.< if
+      # Not in map - add it
+      over tvar-name
+      2 pick tvar-id
+      rot
+      vm-cons
+      nip  # drop original term
+    else
+      # Already in map - keep as is
+      nip
+    then
+  else
+    over tcompound? if
+      # Compound - recurse into args
+      over tcompound-args
+      swap extract-vars-from-termlist
+      nip
+    else
+      # Atom/int/etc - no variables
+      nip
+    then
+  then
+;
+
+# Extract variables from a term list
+: extract-vars-from-termlist ( TermList VarMap -- VarMap )
+  over tlnil? if
+    nip
+  else
+    over tlcar
+    over extract-vars-from-term
+    # Stack: termlist old-map new-map
+    nip  # drop old map
+    swap tlcdr swap
+    extract-vars-from-termlist
+  then
+;
+
+# Extract variables from a goal list
+: extract-vars-from-goals ( GoalList VarMap -- VarMap )
+  over gnull? if
+    nip
+  else
+    over gcar
+    over extract-vars-from-term
+    # Stack: goals old-map new-map
+    nip  # drop old map
+    swap gcdr swap
+    extract-vars-from-goals
+  then
+;
+
+# ============================================
 # Query Parsing
 # ============================================
 
-# Parse a query string into a GoalList
-# Returns gnull on parse error
-: parse-query-string ( String -- GoalList Bool )
+# Parse a query string into a GoalList and extract query variables
+# Returns (GoalList VarMap Bool) - goals, variable map, success
+: parse-query-string ( String -- GoalList VarMap Bool )
   # Tokenize the input
   tokenize
 
-  # Parse as a term with fresh variable counter
-  0 parse-term-with-counter
+  # Parse as goals (handles comma-separated) with fresh variable counter
+  0 parse-goals-with-counter
   drop  # drop counter
 
   # Check if parse succeeded
   dup parse-ok-term? if
     parse-term-value
-    # Wrap single term as goal list
-    gnull gcons
+    # Convert term to goal list
+    term-to-goals
+    # Extract query variables
+    dup vm-empty extract-vars-from-goals
     true
   else
-    drop gnull false
+    drop gnull vm-empty false
   then
 ;
 
@@ -35,7 +99,89 @@ include "solve"
 # Result Printing (Prolog format)
 # ============================================
 
-# Print a substitution's variable bindings
+# Lookup variable name by ID in VarMap
+# Returns empty string if not found
+: vm-lookup-name ( Int VarMap -- String )
+  dup vm-empty? if
+    drop drop ""
+  else
+    dup vm-id
+    2 pick i.= if
+      nip vm-name
+    else
+      vm-rest vm-lookup-name
+    then
+  then
+;
+
+# Print a substitution's variable bindings, filtered by query vars
+# Shows original variable names instead of IDs
+# New approach: iterate through query vars, look up each in subst
+: print-bindings-filtered ( Subst VarMap -- )
+  # Stack: subst varmap (1=subst, 0=varmap)
+  over subst-empty? if
+    drop drop "true." io.write-line
+  else
+    dup vm-empty? if
+      # No query vars - just say true
+      drop drop "true." io.write-line
+    else
+      # Iterate through query vars in VarMap
+      false print-query-vars-loop
+      if
+        "." io.write-line
+      else
+        "true." io.write-line
+      then
+    then
+  then
+;
+
+# Iterate through VarMap entries, print binding for each
+# Stack: subst varmap printed-any
+: print-query-vars-loop ( Subst VarMap Bool -- Bool )
+  over vm-empty? if
+    # Done - return printed-any
+    nip nip
+  else
+    # Get this query var's id
+    over vm-id
+    # Stack: subst varmap printed-any id
+
+    # Look up id in substitution
+    # subst-lookup expects (Int Subst -- Bool Term)
+    3 pick  # get subst
+    # Stack: subst varmap printed-any id subst
+    subst-lookup
+    # Stack: subst varmap printed-any Bool Term (subst-lookup returns Bool Term with Term on top)
+    swap if
+      # Found binding - print it
+      # Stack: subst varmap printed-any Term
+      # First apply substitution to resolve variable chains
+      3 pick apply-subst  # Stack: subst varmap printed-any ResolvedTerm
+      2 pick vm-name  # get var name from varmap
+      # Stack: subst varmap printed-any ResolvedTerm name
+      " = " string.concat
+      swap term-to-string string.concat
+      io.write-line
+      # Stack: subst varmap printed-any
+      drop true  # we printed something
+      # Stack: subst varmap true
+      swap vm-rest swap  # advance to next varmap entry
+      # Stack: subst rest-varmap true
+      print-query-vars-loop
+    else
+      # Not found - skip this var (drop dummy Term)
+      drop
+      # Stack: subst varmap printed-any
+      swap vm-rest swap  # advance to next varmap entry
+      # Stack: subst rest-varmap printed-any
+      print-query-vars-loop
+    then
+  then
+;
+
+# Legacy print-bindings for backwards compatibility (shows all vars with IDs)
 : print-bindings ( Subst -- )
   dup subst-empty? if
     drop "true." io.write-line
@@ -71,39 +217,20 @@ include "solve"
   then
 ;
 
-# Print all solutions by following choice points
-: print-all-solutions ( SolveResult ClauseDB -- )
+# Print all solutions using ChoiceStack for backtracking
+: print-all-solutions ( SolveResult ChoiceStack -- )
   over solve-success? if
-    # Print this solution
-    over solve-success-subst print-bindings
-
-    # Check for more solutions via choice points
-    over solve-success-cp-stack
-    # Stack: result db cp_stack
-    dup cpnil? if
-      # No more choice points
-      drop drop drop "false." io.write-line
-    else
-      # Has choice points - get next solution
-      # Stack: result db cp_stack
-      over       # copy db: result db cp_stack db
-      solve-next # (ChoiceStack ClauseDB -- SolveResult): result db next_result
-      # Stack: result db next_result
-
-      rot drop   # drop old result: db next_result
-      swap       # Stack: next_result db
-
-      # Recurse (should be TCO)
-      print-all-solutions
-    then
+    swap solve-success-subst print-bindings
+    # Stack: cs
+    solve-next
+    # Stack: result cs
+    print-all-solutions
   else
-    over solve-failure? if
-      # No more solutions
-      drop drop "false." io.write-line
+    drop  # drop cs
+    dup solve-failure? if
+      drop "false." io.write-line
     else
-      # Error
-      swap "Error: " swap solve-error-message string.concat io.write-line
-      drop
+      "Error: " swap solve-error-message string.concat io.write-line
     then
   then
 ;
@@ -114,16 +241,24 @@ include "solve"
 
 # Run a query from command line arguments
 # Usage: ./prog --query "goal(X, Y)"
+#        ./prog --query-all "goal(X, Y)"
 : run-cli-query ( ClauseDB -- )
-  # Check for --query flag with argument
+  # Check for --query or --query-all flag with argument
   args.count 3 i.>=
   1 args.at "--query" string.equal? and if
     2 args.at
     # Stack: ClauseDB query-string
     swap run-query-from-string
   else
-    # Any other invocation prints usage (including --help, -h, or no args)
-    drop print-query-usage
+    args.count 3 i.>=
+    1 args.at "--query-all" string.equal? and if
+      2 args.at
+      # Stack: ClauseDB query-string
+      swap run-query-all-from-string
+    else
+      # Any other invocation prints usage (including --help, -h, or no args)
+      drop print-query-usage
+    then
   then
 ;
 
@@ -131,19 +266,85 @@ include "solve"
 # Uses solve-first to avoid infinite loops with recursive rules
 : run-query-from-string ( String ClauseDB -- )
   swap parse-query-string
-  # Stack: ClauseDB GoalList success?
+  # Stack: ClauseDB GoalList VarMap success?
   if
-    # Stack: ClauseDB GoalList
-    over swap          # Stack: ClauseDB ClauseDB GoalList
-    swap run-query     # Stack: ClauseDB SolveResult (single solution)
-    print-single-result
-    drop  # drop ClauseDB
+    # Stack: ClauseDB GoalList VarMap
+    rot                # Stack: GoalList VarMap ClauseDB
+    rot                # Stack: VarMap ClauseDB GoalList
+    swap               # Stack: VarMap GoalList ClauseDB
+    run-query-offset   # Stack: VarMap SolveResult
+    swap               # Stack: SolveResult VarMap
+    print-single-result-filtered
   else
-    drop drop "Error: Failed to parse query" io.write-line
+    drop drop drop "Error: Failed to parse query" io.write-line
   then
 ;
 
-# Print a single result (for use with solve-first)
+# Execute a query string and enumerate all solutions
+: run-query-all-from-string ( String ClauseDB -- )
+  swap parse-query-string
+  # Stack: ClauseDB GoalList VarMap success?
+  if
+    # Stack: ClauseDB GoalList VarMap
+    rot                # Stack: GoalList VarMap ClauseDB
+    rot                # Stack: VarMap ClauseDB GoalList
+    swap               # Stack: VarMap GoalList ClauseDB
+    run-query-all      # Stack: VarMap SolveResult ChoiceStack
+    rot                # Stack: SolveResult ChoiceStack VarMap
+    print-all-results-filtered
+  else
+    drop drop drop "Error: Failed to parse query" io.write-line
+  then
+;
+
+# Print all solutions filtered by query variables
+# Stack: SolveResult ChoiceStack VarMap
+: print-all-results-filtered ( SolveResult ChoiceStack VarMap -- )
+  2 pick solve-success? if
+    # Print this solution
+    2 pick solve-success-subst
+    over print-bindings-filtered
+    # Stack: result cs varmap
+    rot drop           # drop old result
+    # Stack: cs varmap
+    swap solve-next    # Stack: varmap new-result new-cs
+    rot                # Stack: new-result new-cs varmap
+    print-all-results-filtered
+  else
+    # No more solutions
+    drop               # drop varmap
+    drop               # drop cs
+    dup solve-failure? if
+      drop "false." io.write-line
+    else
+      "Error: " swap solve-error-message string.concat io.write-line
+    then
+  then
+;
+
+# Run query with offset counter to avoid collision with query variable IDs
+# Query variables are assigned IDs 0, 1, 2, etc.
+# Clause renaming starts at 1000 to avoid collisions.
+: run-query-offset ( GoalList ClauseDB -- SolveResult )
+  # run-query handles the setup internally
+  run-query
+;
+
+# Print a single result with variable names (for use with solve-first)
+: print-single-result-filtered ( SolveResult VarMap -- )
+  over solve-success? if
+    swap solve-success-subst swap print-bindings-filtered
+  else
+    drop
+    dup solve-failure? if
+      drop "false." io.write-line
+    else
+      "Error: " swap solve-error-message string.concat io.write-line
+    then
+  then
+;
+
+# Legacy print-single-result for backwards compatibility
 : print-single-result ( SolveResult -- )
   dup solve-success? if
     solve-success-subst print-bindings
@@ -158,8 +359,13 @@ include "solve"
 
 : print-query-usage ( -- )
   "Usage: <program> --query \"goal(X, Y)\"" io.write-line
+  "       <program> --query-all \"goal(X, Y)\"" io.write-line
   "" io.write-line
   "Options:" io.write-line
-  "  --query <query>  Execute a Prolog query" io.write-line
-  "  --help, -h       Show this help" io.write-line
+  "  --query <query>      Execute a Prolog query (first solution)" io.write-line
+  "  --query-all <query>  Execute a Prolog query (all solutions)" io.write-line
+  "  --help, -h           Show this help" io.write-line
+  "" io.write-line
+  "Note: --query-all may loop on recursive rules (e.g. ancestor)." io.write-line
+  "Use --query for safe first-solution mode with recursive predicates." io.write-line
 ;

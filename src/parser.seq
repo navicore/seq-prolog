@@ -194,7 +194,7 @@ include "tokenizer"
     then
   else
     # Head parse error
-    nip  # Stack: ParseResult (error)
+    drop  # drop counter, keep ParseResult (error)
   then
 ;
 
@@ -203,7 +203,7 @@ include "tokenizer"
 # ============================================
 
 : parse-goals ( TokenList Int -- ParseResult )
-  parse-goals-with-counter nip
+  parse-goals-with-counter drop
 ;
 
 : parse-goals-with-counter ( TokenList Int -- ParseResult Int )
@@ -249,7 +249,7 @@ include "tokenizer"
 
 : parse-term-with-counter ( TokenList Int -- ParseResult Int )
   over tnil? if
-    drop  # drop empty TokenList
+    nip  # drop TokenList, keep counter
     "Unexpected end of input" no-span make-parse-err
     swap  # Stack: ParseErr Int
   else
@@ -268,8 +268,8 @@ include "tokenizer"
             drop parse-atom-or-compound
           else
             drop  # drop the text
-            "Unexpected token: " over peek-text string.concat
-            over peek-span make-parse-err
+            "Unexpected token: " 2 pick peek-text string.concat
+            2 pick peek-span make-parse-err
             # Stack: TokenList Int ParseErr
             rot drop  # drop TokenList
             swap  # Stack: ParseErr Int
@@ -600,7 +600,7 @@ include "tokenizer"
         over parse-term-value  # Stack: Term result counter rest-term
         2 pick parse-term-remaining  # Stack: Term result counter rest-term remaining
         4 roll  # Stack: result counter rest-term remaining Term
-        swap rot  # Stack: result counter remaining Term rest-term
+        rot  # Stack: result counter remaining Term rest-term
         tl2 "," swap no-span tcompound-at  # Stack: result counter remaining comma-term
         swap make-parse-ok-term  # Stack: result counter new-result
         rot drop  # Stack: counter new-result
@@ -663,7 +663,7 @@ include "tokenizer"
         over parse-term-value  # Stack: Term result counter rest-term
         2 pick parse-term-remaining  # Stack: Term result counter rest-term remaining
         4 roll  # Stack: result counter rest-term remaining Term
-        swap rot  # Stack: result counter remaining Term rest-term
+        rot  # Stack: result counter remaining Term rest-term
         tl2 "," swap no-span tcompound-at  # Stack: result counter remaining comma-term
         swap make-parse-ok-term  # Stack: result counter new-result
         rot drop  # Stack: counter new-result
@@ -746,15 +746,15 @@ include "tokenizer"
 
 : print-parse-result ( ParseResult -- )
   dup parse-ok-term? if
-    "Term: " parse-term-value term-to-string string.concat io.write-line
+    parse-term-value term-to-string "Term: " swap string.concat io.write-line
   else
     dup parse-ok-clause? if
-      "Clause: " parse-clause-value clause-to-string string.concat io.write-line
+      parse-clause-value clause-to-string "Clause: " swap string.concat io.write-line
     else
       dup parse-ok-query? if
-        "Query: " parse-query-goals goals-to-string string.concat io.write-line
+        parse-query-goals goals-to-string "Query: " swap string.concat io.write-line
       else
-        "Error: " parse-err-message string.concat io.write-line
+        parse-err-message "Error: " swap string.concat io.write-line
       then
     then
   then

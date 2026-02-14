@@ -11,6 +11,10 @@ cd "$PROJECT_ROOT"
 PASS=0
 FAIL=0
 
+# Create temp directory for test files
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
 # Test helper function
 run_test() {
     local name="$1"
@@ -28,6 +32,37 @@ run_test() {
     # Run the query
     local result
     result=$(./target/prolog-out --query "$query" 2>&1) || true
+
+    # Check if result matches expected pattern
+    if echo "$result" | grep -q "$expected_pattern"; then
+        echo "PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: $name"
+        echo "  Query: $query"
+        echo "  Expected pattern: $expected_pattern"
+        echo "  Got: $result"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Test helper for --query-all
+run_test_all() {
+    local name="$1"
+    local prolog_file="$2"
+    local query="$3"
+    local expected_pattern="$4"
+
+    # Compile the file using just compile
+    if ! just compile "$prolog_file" > /dev/null 2>&1; then
+        echo "FAIL: $name - compilation failed"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+
+    # Run the query with --query-all
+    local result
+    result=$(./target/prolog-out --query-all "$query" 2>&1) || true
 
     # Check if result matches expected pattern
     if echo "$result" | grep -q "$expected_pattern"; then
@@ -104,27 +139,27 @@ fi
 # === Regression Tests for Bug Fixes ===
 
 # Create a temp file for nested compound tests
-cat > /tmp/test_nested.sprolog << 'NESTED'
+cat > "$TMPDIR/test_nested.sprolog" << 'NESTED'
 outer(inner(deep(X))).
 wrapper(foo(bar(baz))).
 NESTED
 
 # Test 9: Nested compound terms (regression for fix #2)
 run_test "Nested compound query" \
-    "/tmp/test_nested.sprolog" \
+    "$TMPDIR/test_nested.sprolog" \
     "outer(inner(deep(hello)))" \
     "\."
 
 # Test 10: Deeply nested compound with variable
 # Note: Returns true with internal bindings (variable sharing limitation)
 run_test "Nested compound with variable" \
-    "/tmp/test_nested.sprolog" \
+    "$TMPDIR/test_nested.sprolog" \
     "outer(inner(deep(X)))" \
     "\."
 
 # Test 11: Triple nested atoms
 run_test "Triple nested atoms" \
-    "/tmp/test_nested.sprolog" \
+    "$TMPDIR/test_nested.sprolog" \
     "wrapper(foo(bar(baz)))" \
     "true\."
 
@@ -155,7 +190,7 @@ run_test "Simple atom query" \
 # Bug: 6 pick → 5 pick (rest_goals), 8 pick → 10 pick (untried_clauses)
 
 # Create test file with multiple matching clauses
-cat > /tmp/test_multisol.sprolog << 'MULTISOL'
+cat > "$TMPDIR/test_multisol.sprolog" << 'MULTISOL'
 parent(tom, mary).
 parent(tom, james).
 parent(tom, ann).
@@ -163,14 +198,16 @@ parent(mary, bob).
 MULTISOL
 
 # Test 14: Multiple solutions enumeration
-# SKIPPED: Default CLI uses solve-first to avoid infinite loops with recursive queries
-# solve-all works for non-recursive queries but is not exposed via CLI yet
-just compile "/tmp/test_multisol.sprolog" > /dev/null 2>&1
-echo "SKIP: Multiple solutions enumeration (solve-first is default)"
+run_test_all "Multiple solutions enumeration" \
+    "$TMPDIR/test_multisol.sprolog" \
+    "parent(tom, X)" \
+    "= mary"
 
 # Test 15: Choice point exhaustion ends with false
-# SKIPPED: Requires solve-all which is not used by default CLI
-echo "SKIP: Choice point exhaustion (solve-first is default)"
+run_test_all "Choice point exhaustion" \
+    "$TMPDIR/test_multisol.sprolog" \
+    "parent(tom, X)" \
+    "false\."
 
 # Test 16: Single solution case still works
 result=$(./target/prolog-out --query "parent(mary, X)" 2>&1) || true
@@ -184,9 +221,6 @@ else
     echo "  Got: $result"
     FAIL=$((FAIL + 1))
 fi
-
-# Clean up temp files
-rm -f /tmp/test_nested.sprolog /tmp/test_multisol.sprolog
 
 echo ""
 echo "=== Results ==="

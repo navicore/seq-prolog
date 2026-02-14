@@ -638,12 +638,12 @@ union ChoiceStack {
 # ============================================
 
 union SolveResult {
-  SolveSuccess { subst: Subst, cp_stack: ChoiceStack, var_counter: Int }
+  SolveSuccess { subst: Subst }
   SolveFailure
   SolveError { message: String, span: SourceSpan }
 }
 
-: make-solve-success ( Subst ChoiceStack Int -- SolveResult )
+: make-solve-success ( Subst -- SolveResult )
   Make-SolveSuccess ;
 
 : make-solve-failure ( -- SolveResult )
@@ -654,7 +654,7 @@ union SolveResult {
 
 : solve-success? ( SolveResult -- Bool )
   match
-    SolveSuccess -> drop drop drop true
+    SolveSuccess -> drop true
     SolveFailure -> false
     SolveError -> drop drop false
   end
@@ -662,7 +662,7 @@ union SolveResult {
 
 : solve-failure? ( SolveResult -- Bool )
   match
-    SolveSuccess -> drop drop drop false
+    SolveSuccess -> drop false
     SolveFailure -> true
     SolveError -> drop drop false
   end
@@ -670,7 +670,7 @@ union SolveResult {
 
 : solve-error? ( SolveResult -- Bool )
   match
-    SolveSuccess -> drop drop drop false
+    SolveSuccess -> drop false
     SolveFailure -> false
     SolveError -> drop drop true
   end
@@ -678,12 +678,6 @@ union SolveResult {
 
 : solve-success-subst ( SolveResult -- Subst )
   0 variant.field-at ;
-
-: solve-success-cp-stack ( SolveResult -- ChoiceStack )
-  1 variant.field-at ;
-
-: solve-success-var-counter ( SolveResult -- Int )
-  2 variant.field-at ;
 
 : solve-error-message ( SolveResult -- String )
   0 variant.field-at ;
@@ -953,7 +947,7 @@ union ArithResult {
   dup gnull? if
     drop "." string.concat
   else
-    " :- " string.concat
+    swap " :- " string.concat
     swap goals-to-string string.concat
     "." string.concat
   then
