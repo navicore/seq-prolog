@@ -306,8 +306,8 @@ include "version"
         else
           # Body parse failed
           # Stack: HeadTerm BodyResult counter
-          nip  # Stack: HeadTerm BodyResult
-          nip  # Stack: BodyResult (the error)
+          drop  # drop counter: HeadTerm BodyResult
+          nip   # drop HeadTerm: BodyResult (the error)
           dup parse-term-remaining  # Get remaining tokens
           # Stack: BodyResult remaining
           0     # Stack: BodyResult remaining counter
@@ -326,8 +326,7 @@ include "version"
     # Stack: ParseResult counter
     over parse-term-remaining  # Get remaining from failed result
     # Stack: ParseResult counter remaining
-    rot rot  # Stack: remaining ParseResult counter
-    swap rot  # Stack: ParseResult remaining counter
+    swap  # Stack: ParseResult remaining counter
   then
 ;
 
@@ -441,7 +440,7 @@ include "version"
     dup solve-failure? if
       drop "false." io.write-line
     else
-      "Error: " solve-error-message string.concat io.write-line
+      solve-error-message "Error: " swap string.concat io.write-line
     then
   then
 ;

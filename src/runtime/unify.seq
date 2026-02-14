@@ -43,7 +43,7 @@ include "../term"
   # Stack: var_id term subst
   over tvar? if
     # Stack: var_id term subst
-    drop swap tvar-id i.=
+    drop tvar-id i.=
   else
     over tcompound? if
       # Stack: var_id term subst
@@ -53,7 +53,7 @@ include "../term"
         # Stack: var_id term subst
         over tlist-head
         # Stack: var_id term subst head
-        3 pick swap 3 pick occurs-in? if
+        3 pick swap 2 pick occurs-in? if
           drop drop drop true
         else
           # Stack: var_id term subst
@@ -71,7 +71,7 @@ include "../term"
     drop drop drop false
   else
     over tlcar
-    2 pick swap 2 pick occurs-in? if
+    3 pick swap 2 pick occurs-in? if
       drop drop drop true
     else
       swap tlcdr swap occurs-in-termlist?
@@ -273,13 +273,13 @@ include "../term"
     over tcompound? if
       over tcompound-functor
       2 pick tcompound-args 2 pick apply-subst-termlist
-      2 pick tcompound-span tcompound-at
+      3 pick tcompound-span tcompound-at
       nip nip
     else
       over tlist? if
         over tlist-head over apply-subst
         2 pick tlist-tail 2 pick apply-subst
-        2 pick tlist-span tlist-at
+        3 pick tlist-span tlist-at
         nip nip
       else
         # Atom, int, float - return as-is

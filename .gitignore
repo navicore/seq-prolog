@@ -1,5 +1,7 @@
 # Build artifacts
 target/
+.claude/
+seqenv/
 
 # Editor files
 *.swp

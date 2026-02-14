@@ -6,7 +6,9 @@
       "Bash(grep:*)",
       "Bash(seqc build:*)",
       "Bash(just compile:*)",
-      "Bash(./target/prolog-out:*)"
+      "Bash(./target/prolog-out:*)",
+      "Bash(seqc lint:*)",
+      "Bash(just ci:*)"
     ]
   }
 }

@@ -298,8 +298,8 @@ union VarMap {
 # Closures capture state automatically - no manual stack management.
 #
 # Continuation types:
-# SuccessCont = Closure[Subst -- SolveResult]  (called with solution)
-# FailCont = Closure[-- SolveResult]           (called to backtrack)
+# SuccessCont = Closure[Subst FailCont -- SolveResult]  (called with solution AND backtrack cont)
+# FailCont = Closure[-- SolveResult]                    (called to backtrack/get next solution)
 
 # ============================================
 # Entry Points
@@ -312,8 +312,9 @@ union VarMap {
   rot                # Stack: goals subst db
   1000               # Stack: goals subst db counter
 
-  # Create success continuation: Subst -> SolveResult
-  [ cpnil 0 make-solve-success ]
+  # Create success continuation: Subst FailCont -> SolveResult
+  # For first solution: drop fail-cont, make SolveSuccess with just subst
+  [ drop make-solve-success ]
 
   # Create failure continuation: -> SolveResult
   [ make-solve-failure ]
@@ -327,7 +328,8 @@ union VarMap {
   solve-cps
 ;
 
-# run-query-all: Alias for run-query (multi-solution via continuation calling)
+# run-query-all: Placeholder - returns first solution only for now
+# Multi-solution enumeration will be implemented in query.seq
 : run-query-all ( GoalList ClauseDB -- SolveResult )
   run-query
 ;
@@ -343,18 +345,17 @@ union VarMap {
   # Check for empty goals
   5 pick gnull? if
     # No goals - SUCCESS!
-    # Call success continuation with current substitution
+    # Call success continuation with subst AND fail-cont
     # Stack: goals subst succ fail db counter
     # Indices: 5=goals 4=subst 3=succ 2=fail 1=db 0=counter
     drop drop        # drop counter, db (4 items)
     # Stack: goals subst succ fail
-    drop             # drop fail (3 items)
-    # Stack: goals subst succ
-    # Indices: 2=goals 1=subst 0=succ
-    # Need: subst on stack, succ on top for call
-    rot              # Stack: subst succ goals
-    drop             # Stack: subst succ
-    call             # succ(subst) -> SolveResult
+    # Indices: 3=goals 2=subst 1=succ 0=fail
+    # Need: subst fail succ (succ on top for call, subst fail below it)
+    3 roll           # bring goals to top: subst succ fail goals
+    drop             # drop goals: subst succ fail (3 items)
+    swap             # subst fail succ
+    call             # succ(subst, fail) -> SolveResult
   else
     # Have goals - solve first one
     5 pick gcar      # Stack: goals subst succ fail db counter goal
@@ -387,37 +388,23 @@ union VarMap {
     unify-ok-subst   # Stack: goals subst succ fail db counter new-subst (7 items)
     # idx: 6=goals 5=subst 4=succ 3=fail 2=db 1=counter 0=new-subst
 
-    # Get rest-goals and build new stack for solve-cps
-    6 pick gcdr      # rest-goals; Stack now 8 items
+    6 pick gcdr      # rest-goals from original goals (8 items)
     # idx: 7=goals 6=subst 5=succ 4=fail 3=db 2=counter 1=new-subst 0=rest-goals
 
-    # solve-cps needs: goals subst succ fail db counter
-    # We want: rest-goals new-subst succ fail db counter
-
-    # Rearrange: swap to get new-subst rest-goals order correct
-    swap             # Stack: goals subst succ fail db counter rest-goals new-subst (8 items)
+    swap             # (8 items) swap rest-goals and new-subst
     # idx: 7=goals 6=subst 5=succ 4=fail 3=db 2=counter 1=rest-goals 0=new-subst
 
-    # Copy values we need
-    6 pick           # succ (at idx 5+1=6 after our swap made 8 items)
-    6 pick           # fail (at idx 4+2=6)
-    6 pick           # db (at idx 3+3=6)
-    6 pick           # counter (at idx 2+4=6)
-    # Stack: goals subst succ fail db counter rest-goals new-subst succ fail db counter (12 items)
-    # idx: 11=goals 10=subst 9=succ 8=fail 7=db 6=counter 5=rest-goals 4=new-subst 3=succ' 2=fail' 1=db' 0=counter'
+    # Copy succ fail db counter (at indices 5 4 3 2, each shifts +1 per pick)
+    5 pick           # succ  (9 items)
+    5 pick           # fail  (10 items)
+    5 pick           # db    (11 items)
+    5 pick           # counter (12 items)
+    # Stack: goals subst succ fail db counter rest-goals new-subst succ' fail' db' counter'
 
-    # Drop the original 6 items (goals subst succ fail db counter)
-    # They're at positions 6-11, so roll each to top and drop
-    11 roll drop     # drop goals (now 11 items)
-    10 roll drop     # drop subst (now 10 items)
-    9 roll drop      # drop succ (now 9 items)
-    8 roll drop      # drop fail (now 8 items)
-    7 roll drop      # drop db (now 7 items)
-    6 roll drop      # drop counter (now 6 items)
+    # Drop the original 6 items at bottom (indices 6-11 in 12-item stack)
+    11 roll drop  10 roll drop  9 roll drop
+    8 roll drop   7 roll drop   6 roll drop
     # Stack: rest-goals new-subst succ' fail' db' counter' (6 items)
-
-    # Reorder for solve-cps which expects: goals subst succ fail db counter
-    # We have: rest-goals new-subst succ fail db counter - correct order!
     solve-cps
   else
     # Builtin failed - call failure continuation
@@ -487,45 +474,44 @@ union VarMap {
   then
 ;
 
-# unify-success-cps: Unification succeeded, continue solving with clause body
+# unify-success-cps: Unification succeeded, continue solving with combined goals
 # Stack: goals subst succ fail db counter matching renamed new-counter new-subst (10 items)
 : unify-success-cps ( GoalList Subst SuccCont FailCont ClauseDB Int ClauseDB Clause Int Subst -- SolveResult )
-  # Build combined goals: clause-body ++ rest-of-goals
   # Indices: 9=goals 8=subst 7=succ 6=fail 5=db 4=counter 3=matching 2=renamed 1=new-counter 0=new-subst
+
+  # Build combined goals: clause-body ++ rest-of-goals
   2 pick clause-body   # body from renamed (11 items)
   10 pick gcdr         # rest of original goals (12 items)
   gappend              # combined (11 items)
   # Stack: goals subst succ fail db counter matching renamed new-counter new-subst combined
   # Indices: 10=goals 9=subst 8=succ 7=fail 6=db 5=counter 4=matching 3=renamed 2=new-counter 1=new-subst 0=combined
 
+  # For single-solution mode, continue without building backtrack closure
   # solve-cps needs: goals subst succ fail db counter
-  # We want: combined new-subst succ fail db new-counter
+  # We provide: combined new-subst succ fail db new-counter
 
-  # Copy the values we need to top of stack
-  dup              # combined (12 items)
-  2 pick           # new-subst (was at 1, now at 2) (13 items)
-  10 pick          # succ (was at 8, now at 10) (14 items)
-  10 pick          # fail (was at 7, now at 10) (15 items)
-  10 pick          # db (was at 6, now at 10) (16 items)
-  7 pick           # new-counter (was at 2, now at 7) (17 items)
-  # Stack: goals subst succ fail db counter matching renamed new-counter new-subst combined combined' new-subst' succ' fail' db' new-counter'
-  # Indices: 16=goals 15=subst 14=succ 13=fail 12=db 11=counter 10=matching 9=renamed 8=new-counter 7=new-subst 6=combined
-  #          5=combined' 4=new-subst' 3=succ' 2=fail' 1=db' 0=new-counter'
+  # Copy values we need
+  1 pick         # new-subst (12 items)
+  9 pick         # succ (at 8+1) (13 items)
+  9 pick         # fail (at 7+2) (14 items)
+  9 pick         # db (at 6+3) (15 items)
+  6 pick         # new-counter (at 2+4) (16 items)
+  # Stack (16): goals subst succ fail db counter matching renamed new-counter new-subst combined new-subst' succ' fail' db' new-counter'
+  # Top 6 form: combined new-subst' succ' fail' db' new-counter'
 
-  # Drop the original 11 items (indices 6-16)
-  16 roll drop     # drop goals (16 items)
-  15 roll drop     # drop subst (15 items)
-  14 roll drop     # drop succ (14 items)
-  13 roll drop     # drop fail (13 items)
-  12 roll drop     # drop db (12 items)
-  11 roll drop     # drop counter (11 items)
-  10 roll drop     # drop matching (10 items)
-  9 roll drop      # drop renamed (9 items)
-  8 roll drop      # drop new-counter (8 items)
-  7 roll drop      # drop new-subst (7 items)
-  6 roll drop      # drop combined (6 items)
+  # Drop lower 10 items (original stack except combined)
+  15 roll drop   # drop goals (15 items)
+  14 roll drop   # drop subst (14 items)
+  13 roll drop   # drop succ (13 items)
+  12 roll drop   # drop fail (12 items)
+  11 roll drop   # drop db (11 items)
+  10 roll drop   # drop counter (10 items)
+  9 roll drop    # drop matching (9 items)
+  8 roll drop    # drop renamed (8 items)
+  7 roll drop    # drop new-counter (7 items)
+  6 roll drop    # drop new-subst (6 items)
 
-  # Stack: combined' new-subst' succ' fail' db' new-counter' (6 items)
-  # This is the correct order for solve-cps: goals subst succ fail db counter
+  # Stack: combined new-subst' succ' fail' db' new-counter' (6 items)
+  # Matches solve-cps: goals subst succ fail db counter
   solve-cps
 ;

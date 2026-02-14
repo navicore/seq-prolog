@@ -234,19 +234,19 @@ include "runtime/unify"
         nip nip nip nip
       else
         # Check operator
-        3 pick "+" string.equal? if
+        2 pick "+" string.equal? if
           eval-binary-add
         else
-          3 pick "-" string.equal? if
+          2 pick "-" string.equal? if
             eval-binary-sub
           else
-            3 pick "*" string.equal? if
+            2 pick "*" string.equal? if
               eval-binary-mul
             else
-              3 pick "/" string.equal? if
+              2 pick "/" string.equal? if
                 eval-binary-div
               else
-                3 pick "mod" string.equal? if
+                2 pick "mod" string.equal? if
                   eval-binary-mod
                 else
                   drop drop drop drop drop "Unknown operator" make-arith-err
@@ -308,7 +308,8 @@ include "runtime/unify"
 
 : eval-binary-div ( Term Subst String ArithResult ArithResult -- ArithResult )
   over arith-int? over arith-int? and if
-    swap arith-int-value swap arith-int-value i./ make-arith-int
+    swap arith-int-value swap arith-int-value i./
+    if make-arith-int else drop "Division by zero" make-arith-err then
     nip nip nip
   else
     swap
@@ -322,7 +323,8 @@ include "runtime/unify"
 
 : eval-binary-mod ( Term Subst String ArithResult ArithResult -- ArithResult )
   over arith-int? over arith-int? and if
-    swap arith-int-value swap arith-int-value i.% make-arith-int
+    swap arith-int-value swap arith-int-value i.%
+    if make-arith-int else drop "Division by zero" make-arith-err then
     nip nip nip
   else
     drop drop drop drop drop "mod requires integers" make-arith-err
