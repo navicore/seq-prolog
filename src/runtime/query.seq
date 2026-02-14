@@ -217,13 +217,16 @@ include "solve"
   then
 ;
 
-# Print all solutions (TODO: implement with CPS solver)
-# For now, just prints first solution
-: print-all-solutions ( SolveResult ClauseDB -- )
-  drop  # drop db
-  dup solve-success? if
-    solve-success-subst print-bindings
+# Print all solutions using ChoiceStack for backtracking
+: print-all-solutions ( SolveResult ChoiceStack -- )
+  over solve-success? if
+    swap solve-success-subst print-bindings
+    # Stack: cs
+    solve-next
+    # Stack: result cs
+    print-all-solutions
   else
+    drop  # drop cs
     dup solve-failure? if
       drop "false." io.write-line
     else
@@ -238,16 +241,24 @@ include "solve"
 
 # Run a query from command line arguments
 # Usage: ./prog --query "goal(X, Y)"
+#        ./prog --query-all "goal(X, Y)"
 : run-cli-query ( ClauseDB -- )
-  # Check for --query flag with argument
+  # Check for --query or --query-all flag with argument
   args.count 3 i.>=
   1 args.at "--query" string.equal? and if
     2 args.at
     # Stack: ClauseDB query-string
     swap run-query-from-string
   else
-    # Any other invocation prints usage (including --help, -h, or no args)
-    drop print-query-usage
+    args.count 3 i.>=
+    1 args.at "--query-all" string.equal? and if
+      2 args.at
+      # Stack: ClauseDB query-string
+      swap run-query-all-from-string
+    else
+      # Any other invocation prints usage (including --help, -h, or no args)
+      drop print-query-usage
+    then
   then
 ;
 
@@ -266,6 +277,48 @@ include "solve"
     print-single-result-filtered
   else
     drop drop drop "Error: Failed to parse query" io.write-line
+  then
+;
+
+# Execute a query string and enumerate all solutions
+: run-query-all-from-string ( String ClauseDB -- )
+  swap parse-query-string
+  # Stack: ClauseDB GoalList VarMap success?
+  if
+    # Stack: ClauseDB GoalList VarMap
+    rot                # Stack: GoalList VarMap ClauseDB
+    rot                # Stack: VarMap ClauseDB GoalList
+    swap               # Stack: VarMap GoalList ClauseDB
+    run-query-all      # Stack: VarMap SolveResult ChoiceStack
+    rot                # Stack: SolveResult ChoiceStack VarMap
+    print-all-results-filtered
+  else
+    drop drop drop "Error: Failed to parse query" io.write-line
+  then
+;
+
+# Print all solutions filtered by query variables
+# Stack: SolveResult ChoiceStack VarMap
+: print-all-results-filtered ( SolveResult ChoiceStack VarMap -- )
+  2 pick solve-success? if
+    # Print this solution
+    2 pick solve-success-subst
+    over print-bindings-filtered
+    # Stack: result cs varmap
+    rot drop           # drop old result
+    # Stack: cs varmap
+    swap solve-next    # Stack: varmap new-result new-cs
+    rot                # Stack: new-result new-cs varmap
+    print-all-results-filtered
+  else
+    # No more solutions
+    drop               # drop varmap
+    drop               # drop cs
+    dup solve-failure? if
+      drop "false." io.write-line
+    else
+      "Error: " swap solve-error-message string.concat io.write-line
+    then
   then
 ;
 
@@ -306,8 +359,10 @@ include "solve"
 
 : print-query-usage ( -- )
   "Usage: <program> --query \"goal(X, Y)\"" io.write-line
+  "       <program> --query-all \"goal(X, Y)\"" io.write-line
   "" io.write-line
   "Options:" io.write-line
-  "  --query <query>  Execute a Prolog query" io.write-line
-  "  --help, -h       Show this help" io.write-line
+  "  --query <query>      Execute a Prolog query (first solution)" io.write-line
+  "  --query-all <query>  Execute a Prolog query (all solutions)" io.write-line
+  "  --help, -h           Show this help" io.write-line
 ;

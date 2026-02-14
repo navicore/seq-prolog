@@ -1,7 +1,7 @@
-# CPS-Based Solve Engine for SeqProlog
+# ChoiceStack-Threaded Solve Engine for SeqProlog
 #
-# Uses continuation-passing style for clean backtracking.
-# Closures capture state automatically - no manual stack management.
+# Uses explicit ChoiceStack for backtracking.
+# ChoicePoints save goals, untried clauses, and substitution state.
 
 include "../term"
 include "unify"
@@ -291,84 +291,60 @@ union VarMap {
 ;
 
 # ============================================
-# CPS-Based Solver
+# ChoiceStack-Threaded Solver
 # ============================================
 #
-# Continuation-passing style solver for proper backtracking.
-# Closures capture state automatically - no manual stack management.
-#
-# Continuation types:
-# SuccessCont = Closure[Subst FailCont -- SolveResult]  (called with solution AND backtrack cont)
-# FailCont = Closure[-- SolveResult]                    (called to backtrack/get next solution)
+# Uses explicit ChoiceStack for backtracking instead of CPS closures.
+# ChoicePoints save state needed to try alternative clauses.
 
 # ============================================
 # Entry Points
 # ============================================
 
-# run-query: Execute a query and return first solution
+# run-query: Execute a query and return first solution only
 : run-query ( GoalList ClauseDB -- SolveResult )
-  swap               # Stack: db goals
-  subst-empty        # Stack: db goals subst
-  rot                # Stack: goals subst db
-  1000               # Stack: goals subst db counter
-
-  # Create success continuation: Subst FailCont -> SolveResult
-  # For first solution: drop fail-cont, make SolveSuccess with just subst
-  [ drop make-solve-success ]
-
-  # Create failure continuation: -> SolveResult
-  [ make-solve-failure ]
-
-  # Stack: goals subst db counter succ fail
-  # Reorder for solve-cps: goals subst succ fail db counter
-  rot                # Stack: goals subst db succ fail counter
-  3 roll             # Stack: goals subst succ fail counter db
-  swap               # Stack: goals subst succ fail db counter
-
-  solve-cps
+  swap subst-empty rot 1000 cpnil solve
+  drop  # drop ChoiceStack
 ;
 
-# run-query-all: Placeholder - returns first solution only for now
-# Multi-solution enumeration will be implemented in query.seq
-: run-query-all ( GoalList ClauseDB -- SolveResult )
-  run-query
+# run-query-all: Execute a query and return first solution + ChoiceStack for enumeration
+: run-query-all ( GoalList ClauseDB -- SolveResult ChoiceStack )
+  swap subst-empty rot 1000 cpnil solve
 ;
 
 # ============================================
-# Core CPS Solver
+# Core Solver
 # ============================================
 
-# solve-cps: Main solver with continuations
-# Stack: goals subst succ fail db counter
-# Returns: SolveResult
-: solve-cps ( GoalList Subst SuccCont FailCont ClauseDB Int -- SolveResult )
+# solve: Main solver with ChoiceStack threading
+# Stack: goals subst db counter choicestack
+# Returns: SolveResult ChoiceStack
+: solve ( GoalList Subst ClauseDB Int ChoiceStack -- SolveResult ChoiceStack )
   # Check for empty goals
-  5 pick gnull? if
+  4 pick gnull? if
     # No goals - SUCCESS!
-    # Call success continuation with subst AND fail-cont
-    # Stack: goals subst succ fail db counter
-    # Indices: 5=goals 4=subst 3=succ 2=fail 1=db 0=counter
-    drop drop        # drop counter, db (4 items)
-    # Stack: goals subst succ fail
-    # Indices: 3=goals 2=subst 1=succ 0=fail
-    # Need: subst fail succ (succ on top for call, subst fail below it)
-    3 roll           # bring goals to top: subst succ fail goals
-    drop             # drop goals: subst succ fail (3 items)
-    swap             # subst fail succ
-    call             # succ(subst, fail) -> SolveResult
+    # Stack: goals subst db counter cs
+    # Return SolveSuccess with subst, keep cs
+    3 pick make-solve-success
+    # Stack: goals subst db counter cs result
+    5 roll drop  # drop goals
+    4 roll drop  # drop subst
+    3 roll drop  # drop db
+    2 roll drop  # drop counter
+    # Stack: cs result
+    swap         # Stack: result cs
   else
     # Have goals - solve first one
-    5 pick gcar      # Stack: goals subst succ fail db counter goal
+    4 pick gcar  # Stack: goals subst db counter cs goal
 
     dup builtin? if
-      # Built-in predicate
-      solve-builtin-cps
+      solve-builtin
     else
       # User-defined predicate - find matching clauses
-      # Stack: goals subst succ fail db counter goal
-      2 pick           # get db
-      matching-clauses # Stack: goals subst succ fail db counter matching
-      try-clauses-cps
+      # Stack: goals subst db counter cs goal
+      3 pick           # get db
+      matching-clauses # Stack: goals subst db counter cs matching
+      try-clauses
     then
   then
 ;
@@ -377,49 +353,47 @@ union VarMap {
 # Built-in Handling
 # ============================================
 
-# solve-builtin-cps: Handle built-in predicates in CPS style
-# Stack: goals subst succ fail db counter goal
-: solve-builtin-cps ( GoalList Subst SuccCont FailCont ClauseDB Int Term -- SolveResult )
+# solve-builtin: Handle built-in predicates with ChoiceStack
+# Stack: goals subst db counter cs goal
+: solve-builtin ( GoalList Subst ClauseDB Int ChoiceStack Term -- SolveResult ChoiceStack )
   # Execute the builtin: goal subst -> UnifyResult
-  5 pick             # get subst (idx: 6=goals 5=subst 4=succ 3=fail 2=db 1=counter 0=goal)
-  exec-builtin       # Stack: goals subst succ fail db counter result (7 items)
+  4 pick             # get subst
+  exec-builtin       # Stack: goals subst db counter cs result (6 items)
 
   dup unify-ok? if
-    unify-ok-subst   # Stack: goals subst succ fail db counter new-subst (7 items)
-    # idx: 6=goals 5=subst 4=succ 3=fail 2=db 1=counter 0=new-subst
+    unify-ok-subst   # Stack: goals subst db counter cs new-subst (6 items)
+    # idx: 5=goals 4=subst 3=db 2=counter 1=cs 0=new-subst
 
-    6 pick gcdr      # rest-goals from original goals (8 items)
-    # idx: 7=goals 6=subst 5=succ 4=fail 3=db 2=counter 1=new-subst 0=rest-goals
+    5 pick gcdr      # rest-goals (7 items)
+    swap             # Stack: goals subst db counter cs rest-goals new-subst (7 items)
 
-    swap             # (8 items) swap rest-goals and new-subst
-    # idx: 7=goals 6=subst 5=succ 4=fail 3=db 2=counter 1=rest-goals 0=new-subst
+    # Copy db counter cs
+    # Stack (7): goals subst db counter cs rest-goals new-subst
+    # idx: 6=goals 5=subst 4=db 3=counter 2=cs 1=rest-goals 0=new-subst
+    4 pick           # db (8 items)
+    4 pick           # counter (9 items)
+    4 pick           # cs (10 items)
+    # Stack (10): goals subst db counter cs rest-goals new-subst db' counter' cs'
+    # Top 5 form: rest-goals new-subst db' counter' cs'
 
-    # Copy succ fail db counter (at indices 5 4 3 2, each shifts +1 per pick)
-    5 pick           # succ  (9 items)
-    5 pick           # fail  (10 items)
-    5 pick           # db    (11 items)
-    5 pick           # counter (12 items)
-    # Stack: goals subst succ fail db counter rest-goals new-subst succ' fail' db' counter'
-
-    # Drop the original 6 items at bottom (indices 6-11 in 12-item stack)
-    11 roll drop  10 roll drop  9 roll drop
-    8 roll drop   7 roll drop   6 roll drop
-    # Stack: rest-goals new-subst succ' fail' db' counter' (6 items)
-    solve-cps
+    # Drop lower 5 items
+    9 roll drop   # drop goals
+    8 roll drop   # drop subst
+    7 roll drop   # drop db
+    6 roll drop   # drop counter
+    5 roll drop   # drop cs
+    # Stack: rest-goals new-subst db' counter' cs' (5 items)
+    solve
   else
-    # Builtin failed - call failure continuation
-    # Stack: goals subst succ fail db counter result (7 items)
-    # idx: 6=goals 5=subst 4=succ 3=fail 2=db 1=counter 0=result
-    drop             # drop result (6 items)
-    drop             # drop counter (5 items)
-    drop             # drop db (4 items)
-    # Stack: goals subst succ fail (4 items)
-    # idx: 3=goals 2=subst 1=succ 0=fail
-    # Need just fail on stack
-    nip              # drop succ (3 items: goals subst fail)
-    nip              # drop subst (2 items: goals fail)
-    nip              # drop goals (1 item: fail)
-    call             # fail() -> SolveResult
+    # Builtin failed - backtrack
+    # Stack: goals subst db counter cs result (6 items)
+    drop          # drop result
+    4 roll drop   # drop goals
+    3 roll drop   # drop subst
+    2 roll drop   # drop db
+    swap drop     # drop counter, keep cs
+    # Stack: cs
+    solve-next
   then
 ;
 
@@ -427,91 +401,188 @@ union VarMap {
 # Clause Matching with Backtracking
 # ============================================
 
-# try-clauses-cps: Try each matching clause, with backtracking via closures
-# Stack: goals subst succ fail db counter matching
-: try-clauses-cps ( GoalList Subst SuccCont FailCont ClauseDB Int ClauseDB -- SolveResult )
+# try-clauses: Try each matching clause with ChoiceStack
+# Stack: goals subst db counter cs matching
+: try-clauses ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB -- SolveResult ChoiceStack )
   dup db-empty? if
-    # No more clauses - call failure continuation
-    # Stack: goals subst succ fail db counter matching
-    drop             # drop matching
-    drop             # drop counter
-    drop             # drop db
-    nip nip nip      # drop succ, subst, goals - keep fail
-    call             # fail() -> SolveResult
+    # No more clauses - backtrack via solve-next
+    # Stack: goals subst db counter cs matching
+    drop          # drop matching
+    4 roll drop   # drop goals
+    3 roll drop   # drop subst
+    2 roll drop   # drop db
+    swap drop     # drop counter, keep cs
+    # Stack: cs
+    solve-next
   else
-    # Try first clause
-    try-first-clause-cps
+    try-first-clause
   then
 ;
 
-# try-first-clause-cps: Try unifying with first clause
-# Stack: goals subst succ fail db counter matching
-: try-first-clause-cps ( GoalList Subst SuccCont FailCont ClauseDB Int ClauseDB -- SolveResult )
+# try-first-clause: Try unifying with first clause
+# Stack: goals subst db counter cs matching
+: try-first-clause ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB -- SolveResult ChoiceStack )
   # Get first clause and rename
-  dup db-first       # Stack: ...matching clause
-  2 pick             # get counter
-  rename-clause      # Stack: goals subst succ fail db counter matching renamed new-counter
+  dup db-first       # Stack: goals subst db counter cs matching clause (7)
+  3 pick             # get counter (8)
+  rename-clause      # Stack: goals subst db counter cs matching renamed new-counter (8)
 
   # Unify goal with clause head
-  over clause-head   # Stack: ... head
-  9 pick gcar        # first goal
-  9 pick             # subst
+  over clause-head   # head (9)
+  8 pick gcar        # first goal (10)
+  8 pick             # subst (11)
   unify
-  # Stack: goals subst succ fail db counter matching renamed new-counter result
+  # Stack: goals subst db counter cs matching renamed new-counter result (9)
 
   dup unify-ok? if
     unify-ok-subst
-    # Stack: goals subst succ fail db counter matching renamed new-counter new-subst
-    unify-success-cps
+    # Stack: goals subst db counter cs matching renamed new-counter new-subst (9)
+    unify-success
   else
     # Unification failed - try next clause
-    # Stack: goals subst succ fail db counter matching renamed new-counter result
-    drop             # drop result
-    drop             # drop new-counter
-    drop             # drop renamed
+    # Stack: goals subst db counter cs matching renamed new-counter result (9)
+    drop             # drop result (8)
+    drop             # drop new-counter (7)
+    drop             # drop renamed (6)
     db-rest          # remaining clauses
-    try-clauses-cps
+    try-clauses
   then
 ;
 
-# unify-success-cps: Unification succeeded, continue solving with combined goals
-# Stack: goals subst succ fail db counter matching renamed new-counter new-subst (10 items)
-: unify-success-cps ( GoalList Subst SuccCont FailCont ClauseDB Int ClauseDB Clause Int Subst -- SolveResult )
-  # Indices: 9=goals 8=subst 7=succ 6=fail 5=db 4=counter 3=matching 2=renamed 1=new-counter 0=new-subst
+# ============================================
+# Unification Success with Choice Point Creation
+# ============================================
+
+# unify-success: Unification succeeded, optionally push choice point, continue solving
+# Stack: goals subst db counter cs matching renamed new-counter new-subst (9 items)
+: unify-success ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB Clause Int Subst -- SolveResult ChoiceStack )
+  # Indices: 8=goals 7=subst 6=db 5=counter 4=cs 3=matching 2=renamed 1=new-counter 0=new-subst
 
   # Build combined goals: clause-body ++ rest-of-goals
-  2 pick clause-body   # body from renamed (11 items)
-  10 pick gcdr         # rest of original goals (12 items)
-  gappend              # combined (11 items)
-  # Stack: goals subst succ fail db counter matching renamed new-counter new-subst combined
-  # Indices: 10=goals 9=subst 8=succ 7=fail 6=db 5=counter 4=matching 3=renamed 2=new-counter 1=new-subst 0=combined
+  2 pick clause-body   # body from renamed (10 items)
+  9 pick gcdr          # rest of original goals (11 items)
+  gappend              # combined (10 items)
+  # Stack: goals subst db counter cs matching renamed new-counter new-subst combined (10)
+  # Indices: 9=goals 8=subst 7=db 6=counter 5=cs 4=matching 3=renamed 2=new-counter 1=new-subst 0=combined
 
-  # For single-solution mode, continue without building backtrack closure
-  # solve-cps needs: goals subst succ fail db counter
-  # We provide: combined new-subst succ fail db new-counter
+  # Check if matching has remaining clauses (alternatives)
+  4 pick db-rest db-empty? if
+    # No alternatives - no choice point needed
+    # solve needs: combined new-subst db new-counter cs
+    unify-success-no-cp
+  else
+    # Has alternatives - push choice point before solving
+    unify-success-with-cp
+  then
+;
 
-  # Copy values we need
-  1 pick         # new-subst (12 items)
-  9 pick         # succ (at 8+1) (13 items)
-  9 pick         # fail (at 7+2) (14 items)
-  9 pick         # db (at 6+3) (15 items)
-  6 pick         # new-counter (at 2+4) (16 items)
-  # Stack (16): goals subst succ fail db counter matching renamed new-counter new-subst combined new-subst' succ' fail' db' new-counter'
-  # Top 6 form: combined new-subst' succ' fail' db' new-counter'
+# unify-success-no-cp: No alternative clauses, just continue solving
+# Stack: goals subst db counter cs matching renamed new-counter new-subst combined (10)
+: unify-success-no-cp ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB Clause Int Subst GoalList -- SolveResult ChoiceStack )
+  # Indices: 9=goals 8=subst 7=db 6=counter 5=cs 4=matching 3=renamed 2=new-counter 1=new-subst 0=combined
+  # Need: combined new-subst db new-counter cs
 
-  # Drop lower 10 items (original stack except combined)
-  15 roll drop   # drop goals (15 items)
-  14 roll drop   # drop subst (14 items)
-  13 roll drop   # drop succ (13 items)
-  12 roll drop   # drop fail (12 items)
-  11 roll drop   # drop db (11 items)
-  10 roll drop   # drop counter (10 items)
-  9 roll drop    # drop matching (9 items)
-  8 roll drop    # drop renamed (8 items)
-  7 roll drop    # drop new-counter (7 items)
-  6 roll drop    # drop new-subst (6 items)
+  # Copy what we need to top
+  1 pick         # new-subst (11)
+  8 pick         # db (12)
+  4 pick         # new-counter (13)
+  8 pick         # cs (14)
+  # Stack (14): goals subst db counter cs matching renamed new-counter new-subst combined new-subst' db' new-counter' cs'
+  # Top 5: combined new-subst' db' new-counter' cs'
 
-  # Stack: combined new-subst' succ' fail' db' new-counter' (6 items)
-  # Matches solve-cps: goals subst succ fail db counter
-  solve-cps
+  # Drop lower 9 items
+  13 roll drop   # drop goals (13)
+  12 roll drop   # drop subst (12)
+  11 roll drop   # drop db (11)
+  10 roll drop   # drop counter (10)
+  9 roll drop    # drop cs (9)
+  8 roll drop    # drop matching (8)
+  7 roll drop    # drop renamed (7)
+  6 roll drop    # drop new-counter (6)
+  5 roll drop    # drop new-subst (5)
+
+  # Stack: combined new-subst' db' new-counter' cs' (5 items)
+  solve
+;
+
+# unify-success-with-cp: Push choice point for alternatives, then continue solving
+# Stack: goals subst db counter cs matching renamed new-counter new-subst combined (10)
+: unify-success-with-cp ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB Clause Int Subst GoalList -- SolveResult ChoiceStack )
+  # Indices: 9=goals 8=subst 7=db 6=counter 5=cs 4=matching 3=renamed 2=new-counter 1=new-subst 0=combined
+
+  # Build choice point: make-cp ( GoalList ClauseDB ClauseDB Subst Int -- ChoicePoint )
+  # Args: original-goals, rest-of-matching, full-db, original-subst, original-counter
+  9 pick         # goals -> Stack(11)
+  5 pick db-rest # rest-matching -> Stack(12)
+  9 pick         # db -> Stack(13)
+  11 pick        # subst -> Stack(14)
+  10 pick        # counter -> Stack(15)
+  make-cp        # -> Stack(11): goals subst db counter cs matching renamed new-counter new-subst combined cp
+
+  # Push cp onto cs: cpcons ( ChoicePoint ChoiceStack -- ChoiceStack )
+  6 pick         # cs -> Stack(12)
+  cpcons         # -> Stack(11): goals subst db counter cs matching renamed new-counter new-subst combined new-cs
+  # Indices: 10=goals 9=subst 8=db 7=counter 6=cs 5=matching 4=renamed 3=new-counter 2=new-subst 1=combined 0=new-cs
+
+  # Need for solve: combined new-subst db new-counter new-cs
+  # Copy needed values to top
+  1 pick         # combined -> Stack(12)
+  3 pick         # new-subst -> Stack(13)
+  10 pick        # db -> Stack(14)
+  6 pick         # new-counter -> Stack(15)
+  4 pick         # new-cs -> Stack(16)
+  # Top 5: combined new-subst db new-counter new-cs
+
+  # Drop lower 11
+  15 roll drop  14 roll drop  13 roll drop  12 roll drop
+  11 roll drop  10 roll drop  9 roll drop   8 roll drop
+  7 roll drop   6 roll drop   5 roll drop
+  # Stack: combined new-subst db new-counter new-cs (5)
+  solve
+;
+
+# ============================================
+# Backtracking
+# ============================================
+
+# solve-next: Backtrack by popping a choice point and trying next clause
+# Stack: cs
+# Returns: SolveResult ChoiceStack
+: solve-next ( ChoiceStack -- SolveResult ChoiceStack )
+  dup cpnil? if
+    # No more choice points - failure
+    drop
+    make-solve-failure cpnil
+  else
+    # Pop top choice point
+    dup cpcar       # Stack: cs cp
+    swap cpcdr      # Stack: cp rest-cs
+
+    # Extract fields from choice point
+    over cp-goals             # Stack: cp rest-cs goals
+    2 pick cp-untried-clauses # Stack: cp rest-cs goals untried
+    3 pick cp-full-db         # Stack: cp rest-cs goals untried db
+    4 pick cp-subst           # Stack: cp rest-cs goals untried db subst
+    5 pick cp-var-counter     # Stack: cp rest-cs goals untried db subst counter (7)
+
+    # Rearrange for try-clauses: goals subst db counter cs matching
+    # We have: cp rest-cs goals untried db subst counter (7 items)
+    # idx:     6  5       4     3       2  1     0
+
+    # Build target stack: goals subst db counter rest-cs untried
+    4 pick         # goals -> Stack(8)
+    2 pick         # subst -> Stack(9)
+    4 pick         # db -> Stack(10)
+    3 pick         # counter -> Stack(11)
+    9 pick         # rest-cs -> Stack(12)
+    8 pick         # untried -> Stack(13)
+    # Top 6: goals subst db counter rest-cs untried
+
+    # Drop lower 7
+    12 roll drop  11 roll drop  10 roll drop  9 roll drop
+    8 roll drop   7 roll drop   6 roll drop
+    # Stack: goals subst db counter rest-cs untried (6)
+    # This matches: goals subst db counter cs matching
+    try-clauses
+  then
 ;

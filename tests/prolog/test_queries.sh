@@ -162,15 +162,48 @@ parent(tom, ann).
 parent(mary, bob).
 MULTISOL
 
+# Test helper for --query-all
+run_test_all() {
+    local name="$1"
+    local prolog_file="$2"
+    local query="$3"
+    local expected_pattern="$4"
+
+    # Compile the file using just compile
+    if ! just compile "$prolog_file" > /dev/null 2>&1; then
+        echo "FAIL: $name - compilation failed"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+
+    # Run the query with --query-all
+    local result
+    result=$(./target/prolog-out --query-all "$query" 2>&1) || true
+
+    # Check if result matches expected pattern
+    if echo "$result" | grep -q "$expected_pattern"; then
+        echo "PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: $name"
+        echo "  Query: $query"
+        echo "  Expected pattern: $expected_pattern"
+        echo "  Got: $result"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 # Test 14: Multiple solutions enumeration
-# SKIPPED: Default CLI uses solve-first to avoid infinite loops with recursive queries
-# solve-all works for non-recursive queries but is not exposed via CLI yet
-just compile "/tmp/test_multisol.sprolog" > /dev/null 2>&1
-echo "SKIP: Multiple solutions enumeration (solve-first is default)"
+run_test_all "Multiple solutions enumeration" \
+    "/tmp/test_multisol.sprolog" \
+    "parent(tom, X)" \
+    "= mary"
 
 # Test 15: Choice point exhaustion ends with false
-# SKIPPED: Requires solve-all which is not used by default CLI
-echo "SKIP: Choice point exhaustion (solve-first is default)"
+run_test_all "Choice point exhaustion" \
+    "/tmp/test_multisol.sprolog" \
+    "parent(tom, X)" \
+    "false\."
 
 # Test 16: Single solution case still works
 result=$(./target/prolog-out --query "parent(mary, X)" 2>&1) || true

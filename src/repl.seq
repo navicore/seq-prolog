@@ -390,8 +390,9 @@ include "version"
       then
       over  # Stack: db GoalList db
       dup rot  # Stack: db db GoalList db
-      run-query-all  # Stack: db db SolveResult (with choice points)
-      swap  # Stack: db SolveResult db
+      run-query-all  # Stack: db db SolveResult ChoiceStack
+      rot  # Stack: db SolveResult ChoiceStack db
+      drop  # Stack: db SolveResult ChoiceStack
       display-all-solutions  # Stack: db
     else
       # Stack: db result
@@ -406,20 +407,23 @@ include "version"
 # Result Display
 # ============================================
 
-# Display first solution (multi-solution support to be added later)
-: display-all-solutions ( SolveResult ClauseDB -- )
-  # Stack: SolveResult ClauseDB (ClauseDB on top)
-  drop  # drop ClauseDB - not needed for single solution display
-  # Stack: SolveResult
-  dup solve-success? if
+# Display all solutions by iterating ChoiceStack
+: display-all-solutions ( SolveResult ChoiceStack -- )
+  over solve-success? if
     # Display this solution
-    solve-success-subst
+    over solve-success-subst
     dup subst-empty? if
       drop "true." io.write-line
     else
       display-bindings
     then
+    # Stack: result cs
+    swap drop    # drop old result
+    # Stack: cs
+    solve-next   # Stack: new-result new-cs
+    display-all-solutions
   else
+    drop  # drop cs
     dup solve-failure? if
       drop "false." io.write-line
     else
