@@ -239,8 +239,21 @@ include "solve"
 # JSON Output Support
 # ============================================
 
-# Escape special characters in strings for JSON output.
-# Escapes backslash, double quote, newline, tab, carriage return.
+# Escape special characters in strings for JSON output (RFC 8259).
+# Escapes: backslash, double quote, backspace, form feed, newline, tab, CR.
+# Note: Uses the same char-at indexing pattern as codegen.seq's escape-string-loop.
+# Multibyte UTF-8 characters pass through; Seq's string primitives handle encoding.
+
+# Handle backspace, form feed, or pass through for remaining characters
+: json-escape-control-or-passthrough ( Int -- String )
+  dup 8 i.= if
+    drop 92 char->string 98 char->string string.concat
+  else dup 12 i.= if
+    drop 92 char->string 102 char->string string.concat
+  else
+    char->string
+  then then
+;
 
 : json-escape-string-loop ( String Int String -- String )
   # Stack: input pos acc
@@ -251,45 +264,29 @@ include "solve"
     # Get char at input[pos]
     2 pick 2 pick string.char-at
     dup 92 i.= if
-      # Backslash (92) -> double it
-      drop
-      92 char->string 92 char->string string.concat
-      string.concat
-      swap 1 i.add swap
-      json-escape-string-loop
+      # Backslash (92) -> escape
+      drop 92 char->string 92 char->string string.concat
+      string.concat swap 1 i.add swap json-escape-string-loop
     else dup 34 i.= if
-      # Double quote (34) -> escape with backslash
-      drop
-      92 char->string 34 char->string string.concat
-      string.concat
-      swap 1 i.add swap
-      json-escape-string-loop
+      # Double quote (34) -> escape
+      drop 92 char->string 34 char->string string.concat
+      string.concat swap 1 i.add swap json-escape-string-loop
     else dup 10 i.= if
       # Newline (10) -> \n
-      drop
-      92 char->string 110 char->string string.concat
-      string.concat
-      swap 1 i.add swap
-      json-escape-string-loop
+      drop 92 char->string 110 char->string string.concat
+      string.concat swap 1 i.add swap json-escape-string-loop
     else dup 9 i.= if
       # Tab (9) -> \t
-      drop
-      92 char->string 116 char->string string.concat
-      string.concat
-      swap 1 i.add swap
-      json-escape-string-loop
+      drop 92 char->string 116 char->string string.concat
+      string.concat swap 1 i.add swap json-escape-string-loop
     else dup 13 i.= if
       # Carriage return (13) -> \r
-      drop
-      92 char->string 114 char->string string.concat
-      string.concat
-      swap 1 i.add swap
-      json-escape-string-loop
+      drop 92 char->string 114 char->string string.concat
+      string.concat swap 1 i.add swap json-escape-string-loop
     else
-      # Regular char -> append as-is
-      char->string string.concat
-      swap 1 i.add swap
-      json-escape-string-loop
+      # Backspace (8) -> \b, form feed (12) -> \f, else pass through
+      json-escape-control-or-passthrough
+      string.concat swap 1 i.add swap json-escape-string-loop
     then then then then then
   then
 ;
@@ -493,6 +490,8 @@ include "solve"
 # Recursively collect all solutions into a comma-separated string of JSON objects.
 # Uses the call stack for accumulation: each recursive call returns the rest,
 # and we prepend the current solution with a comma separator.
+# Note: Uses unbounded recursion — one stack frame per solution. Suitable for
+# typical Prolog result sets but may overflow on thousands of solutions.
 : json-collect-all ( SolveResult ChoiceStack VarMap -- String )
   2 pick solve-success? if
     # Get current solution's bindings as JSON object string
