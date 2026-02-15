@@ -5,7 +5,11 @@
 #   clause   ::= term '.' | term ':-' goals '.'
 #   query    ::= '?-' goals '.'
 #   goals    ::= term (',' term)*
-#   term     ::= atom | variable | number | compound | list
+#   term     ::= expr-700
+#   expr-700 ::= expr-500 (op-700 expr-500)?        -- is, =, \=, <, >, =<, >=, =:=, =\=  (non-assoc)
+#   expr-500 ::= expr-400 (op-500 expr-400)*         -- +, -  (left-associative)
+#   expr-400 ::= primary (op-400 primary)*           -- *, /, mod  (left-associative)
+#   primary  ::= atom | variable | number | compound | list | '(' expr-700 ')' | '-' primary
 #   compound ::= atom '(' args ')'
 #   args     ::= term (',' term)*
 #   list     ::= '[]' | '[' items ']' | '[' items '|' term ']'
@@ -244,10 +248,175 @@ include "tokenizer"
 ;
 
 # ============================================
-# Term Parsing
+# Operator Detection Helpers
+# ============================================
+
+: is-op-700? ( String -- Bool )
+  dup "is" string.equal? if drop true else
+  dup "=" string.equal? if drop true else
+  dup "\\=" string.equal? if drop true else
+  dup "<" string.equal? if drop true else
+  dup ">" string.equal? if drop true else
+  dup "=<" string.equal? if drop true else
+  dup ">=" string.equal? if drop true else
+  dup "=:=" string.equal? if drop true else
+  dup "=\\=" string.equal? if drop true else
+  drop false
+  then then then then then then then then then
+;
+
+: is-op-500? ( String -- Bool )
+  dup "+" string.equal? if drop true else
+  dup "-" string.equal? if drop true else
+  drop false
+  then then
+;
+
+: is-op-400? ( String -- Bool )
+  dup "*" string.equal? if drop true else
+  dup "/" string.equal? if drop true else
+  dup "mod" string.equal? if drop true else
+  drop false
+  then then then
+;
+
+# ============================================
+# Term Parsing (with operator precedence)
 # ============================================
 
 : parse-term-with-counter ( TokenList Int -- ParseResult Int )
+  parse-expr-700-with-counter
+;
+
+# Level 700: is, =, \=, <, >, =<, >=, =:=, =\= (non-associative)
+: parse-expr-700-with-counter ( TokenList Int -- ParseResult Int )
+  parse-expr-500-with-counter
+  over parse-ok-term? if
+    over parse-term-remaining
+    dup tnil? not if
+      dup peek-text is-op-700? if
+        dup tcar-text
+        swap tcdr
+        rot
+        parse-expr-500-with-counter
+        build-binop
+      else
+        drop
+      then
+    else
+      drop
+    then
+  else
+  then
+;
+
+# Level 500: +, - (left-associative)
+: parse-expr-500-with-counter ( TokenList Int -- ParseResult Int )
+  parse-expr-400-with-counter
+  parse-expr-500-loop
+;
+
+: parse-expr-500-loop ( ParseResult Int -- ParseResult Int )
+  over parse-ok-term? if
+    over parse-term-remaining
+    dup tnil? not if
+      dup peek-text is-op-500? if
+        dup tcar-text
+        swap tcdr
+        rot
+        parse-expr-400-with-counter
+        build-binop
+        parse-expr-500-loop
+      else
+        drop
+      then
+    else
+      drop
+    then
+  else
+  then
+;
+
+# Level 400: *, /, mod (left-associative)
+: parse-expr-400-with-counter ( TokenList Int -- ParseResult Int )
+  parse-primary-with-counter
+  parse-expr-400-loop
+;
+
+: parse-expr-400-loop ( ParseResult Int -- ParseResult Int )
+  over parse-ok-term? if
+    over parse-term-remaining
+    dup tnil? not if
+      dup peek-text is-op-400? if
+        dup tcar-text
+        swap tcdr
+        rot
+        parse-primary-with-counter
+        build-binop
+        parse-expr-400-loop
+      else
+        drop
+      then
+    else
+      drop
+    then
+  else
+  then
+;
+
+# Build binary operator compound: TCompound(op, [left, right])
+# Stack: left_PR op_text right_PR counter -> new_PR counter
+: build-binop ( ParseResult String ParseResult Int -- ParseResult Int )
+  over parse-term-value               # left_PR op right_PR counter right
+  2 pick parse-term-remaining         # left_PR op right_PR counter right remaining
+  5 pick parse-term-value             # left_PR op right_PR counter right remaining left
+  rot                                 # left_PR op right_PR counter remaining left right
+  tl2                                 # left_PR op right_PR counter remaining [left,right]
+  4 roll                              # left_PR right_PR counter remaining [left,right] op
+  swap no-span tcompound-at           # left_PR right_PR counter remaining compound
+  swap make-parse-ok-term             # left_PR right_PR counter new_PR
+  rot drop                            # left_PR counter new_PR
+  rot drop                            # counter new_PR
+  swap                                # new_PR counter
+;
+
+# Parse parenthesized expression: '(' expr-700 ')'
+: parse-paren-expr ( TokenList Int -- ParseResult Int )
+  swap tcdr swap                          # consume "(": remaining counter
+  parse-expr-700-with-counter             # ParseResult counter
+  over parse-ok-term? if
+    over parse-term-remaining             # ParseResult counter remaining
+    dup peek-text ")" string.equal? if
+      tcdr                                # ParseResult counter remaining'
+      rot parse-term-value                # counter remaining' Term
+      swap make-parse-ok-term             # counter NewPR
+      swap                                # NewPR counter
+    else
+      rot drop                            # counter remaining
+      peek-span "Expected ')'" swap make-parse-err  # counter ParseErr
+      swap                                # ParseErr counter
+    then
+  else
+  then
+;
+
+# Parse unary minus: '-' primary
+: parse-unary-minus ( TokenList Int -- ParseResult Int )
+  swap tcdr swap                          # consume "-": remaining counter
+  parse-primary-with-counter              # ParseResult counter
+  over parse-ok-term? if
+    swap                                  # counter ParseResult
+    dup parse-term-value                  # counter PR term
+    swap parse-term-remaining             # counter term remaining
+    swap tl1 "-" swap no-span tcompound-at  # counter remaining compound
+    swap make-parse-ok-term               # counter NewPR
+    swap                                  # NewPR counter
+  else
+  then
+;
+
+# Primary term: atom, variable, number, compound, list, parenthesized expr, unary minus
+: parse-primary-with-counter ( TokenList Int -- ParseResult Int )
   over tnil? if
     nip  # drop TokenList, keep counter
     "Unexpected end of input" no-span make-parse-err
@@ -267,12 +436,20 @@ include "tokenizer"
           dup is-atom-token? if
             drop parse-atom-or-compound
           else
-            drop  # drop the text
-            "Unexpected token: " 2 pick peek-text string.concat
-            2 pick peek-span make-parse-err
-            # Stack: TokenList Int ParseErr
-            rot drop  # drop TokenList
-            swap  # Stack: ParseErr Int
+            dup "(" string.equal? if
+              drop parse-paren-expr
+            else
+              dup "-" string.equal? if
+                drop parse-unary-minus
+              else
+                drop  # drop the text
+                "Unexpected token: " 2 pick peek-text string.concat
+                2 pick peek-span make-parse-err
+                # Stack: TokenList Int ParseErr
+                rot drop  # drop TokenList
+                swap  # Stack: ParseErr Int
+              then
+            then
           then
         then
       then
