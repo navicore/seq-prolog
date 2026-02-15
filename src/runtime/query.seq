@@ -413,13 +413,13 @@ include "solve"
 ;
 
 # JSON entry point for --query (single solution)
-: run-query-from-string-json ( String ClauseDB -- )
+: run-query-from-string-json ( String PredicateIndex -- )
   swap parse-query-string
-  # Stack: ClauseDB GoalList VarMap success?
+  # Stack: PredicateIndex GoalList VarMap success?
   if
-    rot                # Stack: GoalList VarMap ClauseDB
-    rot                # Stack: VarMap ClauseDB GoalList
-    swap               # Stack: VarMap GoalList ClauseDB
+    rot                # Stack: GoalList VarMap PredicateIndex
+    rot                # Stack: VarMap PredicateIndex GoalList
+    swap               # Stack: VarMap GoalList PredicateIndex
     run-query-offset   # Stack: VarMap SolveResult
     swap               # Stack: SolveResult VarMap
     json-single-result
@@ -450,13 +450,13 @@ include "solve"
 ;
 
 # JSON entry point for --query-all (all solutions)
-: run-query-all-from-string-json ( String ClauseDB -- )
+: run-query-all-from-string-json ( String PredicateIndex -- )
   swap parse-query-string
-  # Stack: ClauseDB GoalList VarMap success?
+  # Stack: PredicateIndex GoalList VarMap success?
   if
-    rot                # Stack: GoalList VarMap ClauseDB
-    rot                # Stack: VarMap ClauseDB GoalList
-    swap               # Stack: VarMap GoalList ClauseDB
+    rot                # Stack: GoalList VarMap PredicateIndex
+    rot                # Stack: VarMap PredicateIndex GoalList
+    swap               # Stack: VarMap GoalList PredicateIndex
     run-query-all      # Stack: VarMap SolveResult ChoiceStack
     rot                # Stack: SolveResult ChoiceStack VarMap
     json-all-results
@@ -530,11 +530,12 @@ include "solve"
 # Usage: ./prog --query "goal(X, Y)"
 #        ./prog --query-all "goal(X, Y)"
 : run-cli-query ( ClauseDB -- )
+  build-index   # ClauseDB → PredicateIndex (one-time, at startup)
   # Check for --query or --query-all flag with argument
   args.count 3 i.>=
   1 args.at "--query" string.equal? and if
     2 args.at
-    # Stack: ClauseDB query-string
+    # Stack: PredicateIndex query-string
     swap
     format-json? if
       run-query-from-string-json
@@ -545,7 +546,7 @@ include "solve"
     args.count 3 i.>=
     1 args.at "--query-all" string.equal? and if
       2 args.at
-      # Stack: ClauseDB query-string
+      # Stack: PredicateIndex query-string
       swap
       format-json? if
         run-query-all-from-string-json
@@ -559,16 +560,15 @@ include "solve"
   then
 ;
 
-# Execute a query string against a clause database
-# Uses solve-first to avoid infinite loops with recursive rules
-: run-query-from-string ( String ClauseDB -- )
+# Execute a query string against an indexed predicate database
+: run-query-from-string ( String PredicateIndex -- )
   swap parse-query-string
   # Stack: ClauseDB GoalList VarMap success?
   if
-    # Stack: ClauseDB GoalList VarMap
-    rot                # Stack: GoalList VarMap ClauseDB
-    rot                # Stack: VarMap ClauseDB GoalList
-    swap               # Stack: VarMap GoalList ClauseDB
+    # Stack: PredicateIndex GoalList VarMap
+    rot                # Stack: GoalList VarMap PredicateIndex
+    rot                # Stack: VarMap PredicateIndex GoalList
+    swap               # Stack: VarMap GoalList PredicateIndex
     run-query-offset   # Stack: VarMap SolveResult
     swap               # Stack: SolveResult VarMap
     print-single-result-filtered
@@ -578,14 +578,14 @@ include "solve"
 ;
 
 # Execute a query string and enumerate all solutions
-: run-query-all-from-string ( String ClauseDB -- )
+: run-query-all-from-string ( String PredicateIndex -- )
   swap parse-query-string
-  # Stack: ClauseDB GoalList VarMap success?
+  # Stack: PredicateIndex GoalList VarMap success?
   if
-    # Stack: ClauseDB GoalList VarMap
-    rot                # Stack: GoalList VarMap ClauseDB
-    rot                # Stack: VarMap ClauseDB GoalList
-    swap               # Stack: VarMap GoalList ClauseDB
+    # Stack: PredicateIndex GoalList VarMap
+    rot                # Stack: GoalList VarMap PredicateIndex
+    rot                # Stack: VarMap PredicateIndex GoalList
+    swap               # Stack: VarMap GoalList PredicateIndex
     run-query-all      # Stack: VarMap SolveResult ChoiceStack
     rot                # Stack: SolveResult ChoiceStack VarMap
     print-all-results-filtered
@@ -622,7 +622,7 @@ include "solve"
 # Run query with offset counter to avoid collision with query variable IDs
 # Query variables are assigned IDs 0, 1, 2, etc.
 # Clause renaming starts at 1000 to avoid collisions.
-: run-query-offset ( GoalList ClauseDB -- SolveResult )
+: run-query-offset ( GoalList PredicateIndex -- SolveResult )
   # run-query handles the setup internally
   run-query
 ;

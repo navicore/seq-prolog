@@ -242,7 +242,319 @@ union VarMap {
 ;
 
 # ============================================
-# Find Matching Clauses
+# Predicate Index Building
+# ============================================
+
+# Extract predicate key from a clause head term
+# For compound: "functor/arity", for atom: "atomname/0"
+: clause-pred-key ( Clause -- String )
+  clause-head
+  dup tcompound? if
+    dup tcompound-functor
+    swap tcompound-args tllen int->string
+    "/" swap string.concat swap string.concat
+  else
+    dup tatom? if
+      tatom-name "/0" string.concat
+    else
+      drop "unknown/0"
+    then
+  then
+;
+
+# Extract predicate key from a goal term
+: goal-pred-key ( Term -- String )
+  dup tcompound? if
+    dup tcompound-functor
+    swap tcompound-args tllen int->string
+    "/" swap string.concat swap string.concat
+  else
+    dup tatom? if
+      tatom-name "/0" string.concat
+    else
+      drop "unknown/0"
+    then
+  then
+;
+
+# Extract first-arg key from a clause head (for arg indexing)
+# Returns ( String Bool ) -- key and whether it's indexable (non-variable first arg)
+: clause-first-arg-key ( Clause -- String Bool )
+  clause-head
+  dup tcompound? if
+    tcompound-args
+    dup tlnil? if
+      drop "" false
+    else
+      tlcar
+      dup tatom? if
+        tatom-name true
+      else
+        dup tint? if
+          tint-value int->string true
+        else
+          dup tcompound? if
+            dup tcompound-functor
+            swap tcompound-args tllen int->string
+            "/" swap string.concat swap string.concat
+            true
+          else
+            # Variable or other - not indexable
+            drop "" false
+          then
+        then
+      then
+    then
+  else
+    # Atom (no args) - not indexable
+    drop "" false
+  then
+;
+
+# Extract first-arg key from a goal term (for lookup)
+# Returns ( String Bool ) -- key and whether first arg is ground
+: goal-first-arg-key ( Term -- String Bool )
+  dup tcompound? if
+    tcompound-args
+    dup tlnil? if
+      drop "" false
+    else
+      tlcar
+      dup tatom? if
+        tatom-name true
+      else
+        dup tint? if
+          tint-value int->string true
+        else
+          dup tcompound? if
+            dup tcompound-functor
+            swap tcompound-args tllen int->string
+            "/" swap string.concat swap string.concat
+            true
+          else
+            # Variable - not ground
+            drop "" false
+          then
+        then
+      then
+    then
+  else
+    # Atom - no args
+    drop "" false
+  then
+;
+
+# ============================================
+# Index Entry Helpers
+# ============================================
+
+# Add clause with ground first arg to a PredicateEntry
+# Adds clause to arg_index (under given key) and to all_clauses
+: entry-add-indexed ( Clause String PredicateEntry -- PredicateEntry )
+  # Stack: clause(2) key(1) entry(0)
+  # Step 1: Build new arg_index by adding clause to key's bucket
+  dup pred-arg-index       # clause(3) key(2) entry(1) arg-idx(0)
+  2 pick                   # clause(4) key(3) entry(2) arg-idx(1) key-copy(0)
+  4 pick                   # clause(5) key(4) entry(3) arg-idx(2) key-copy(1) clause-copy(0)
+  rot                      # clause(5) key(4) entry(3) key-copy(2) clause-copy(1) arg-idx(0)
+  ai-add                   # clause(2) key(1) entry(0) new-arg-idx
+  # Step 2: Copy var_clauses (unchanged)
+  over pred-var-clauses    # clause(3) key(2) entry(1) new-arg-idx(0) -> over copies entry ->
+                           # clause(4) key(3) entry(2) new-arg-idx(1) var-cls(0)
+  # Step 3: Build new all_clauses (append clause)
+  2 pick pred-all-clauses  # clause(5) key(4) entry(3) new-arg-idx(2) var-cls(1) all-cls(0)
+  5 pick swap db-cons      # clause(4) key(3) entry(2) new-arg-idx(1) var-cls(0) new-all
+  # Top 3: new-arg-idx(2) var-cls(1) new-all(0) = args for make-pred-entry
+  make-pred-entry          # clause(1) key(0) entry -> wait, consumed 3 -> clause(1) key(0) new-pred
+  nip nip nip              # new-pred
+;
+
+# Add clause with variable first arg to a PredicateEntry
+# Adds clause to var_clauses and to all_clauses; arg_index unchanged
+: entry-add-to-var ( Clause PredicateEntry -- PredicateEntry )
+  # Stack: clause(1) entry(0)
+  dup pred-arg-index       # clause(2) entry(1) arg-idx(0)
+  # Prepend clause to var_clauses (reversed later by finalize-index)
+  2 pick                   # clause(3) entry(2) arg-idx(1) clause-copy(0)
+  2 pick pred-var-clauses  # clause(4) entry(3) arg-idx(2) clause-copy(1) var-cls(0)
+  db-cons                  # clause(2) entry(1) arg-idx(0) new-var
+  # Prepend clause to all_clauses (reversed later by finalize-index)
+  3 pick                   # clause(3) entry(2) arg-idx(1) new-var(0) clause-copy2
+  3 pick pred-all-clauses  # clause(4) entry(3) arg-idx(2) new-var(1) clause-copy2(0) -> 3 pick copies entry ->
+                           # ... all-cls(0)
+  db-cons                  # clause(2) entry(1) arg-idx(0) new-var new-all
+  # Top 3: arg-idx new-var new-all = args for make-pred-entry
+  make-pred-entry          # clause(1) entry(0) new-pred
+  nip nip                  # new-pred
+;
+
+# Add a clause to a PredicateEntry, routing to arg_index or var_clauses
+: pred-entry-add ( Clause PredicateEntry -- PredicateEntry )
+  # Stack: clause(1) entry(0)
+  swap dup clause-first-arg-key
+  # swap: entry(1) clause(0)
+  # dup: entry(2) clause(1) clause-copy(0)
+  # clause-first-arg-key consumes copy, returns key+bool:
+  #   entry(3) clause(2) key(1) indexable?(0)
+  if
+    # Indexable: entry(2) clause(1) key(0)
+    rot                    # clause(2) key(1) entry(0)
+    entry-add-indexed
+  else
+    # Not indexable: entry(2) clause(1) key(0)
+    drop                   # entry(1) clause(0)
+    swap                   # clause(1) entry(0)
+    entry-add-to-var
+  then
+;
+
+# ============================================
+# Predicate Index Helpers
+# ============================================
+
+# Replace a predicate entry by key in the index
+: pi-replace ( String PredicateEntry PredicateIndex -- PredicateIndex )
+  # Stack: key(2) new-entry(1) index(0)
+  dup pi-empty? if
+    # Not found - just add it
+    drop pi-empty pi-cons
+  else
+    dup pi-key
+    3 pick string.equal? if
+      # Found it - replace entry, keep rest
+      # Stack: key(2) new-entry(1) index(0)
+      pi-rest              # key(2) new-entry(1) rest(0)
+      pi-cons              # result
+    else
+      # Not this one - recurse on rest
+      # Stack: key(2) new-entry(1) index(0)
+      dup pi-rest            # key(3) new-entry(2) index(1) rest(0)
+      3 pick                 # key(4) new-entry(3) index(2) rest(1) key-copy(0)
+      3 pick                 # key(5) new-entry(4) index(3) rest(2) key-copy(1) new-entry-copy(0)
+      rot                    # key(5) new-entry(4) index(3) key-copy(2) new-entry-copy(1) rest(0)
+      pi-replace             # key(2) new-entry(1) index(0) rebuilt-rest
+      swap dup pi-key        # key(3) new-entry(2) rebuilt-rest(1) index(0) ->
+                             # key(4) new-entry(3) rebuilt-rest(2) index(1) this-key(0)
+      swap pi-entry          # key(4) new-entry(3) rebuilt-rest(2) this-key(1) this-entry(0)
+      rot                    # key(4) new-entry(3) this-key(2) this-entry(1) rebuilt-rest(0)
+      pi-cons                # key(1) new-entry(0) rebuilt
+      nip nip                # result
+    then
+  then
+;
+
+# Add a clause to the predicate index
+: pi-add-clause ( Clause PredicateIndex -- PredicateIndex )
+  # Stack: clause(1) pidx(0)
+  over clause-pred-key     # clause(2) pidx(1) pred-key(0)
+  dup                      # clause(3) pidx(2) pred-key(1) pred-key-copy(0)
+  2 pick                   # clause(4) pidx(3) pred-key(2) pred-key-copy(1) pidx-copy(0)
+  pi-lookup                # clause(4) pidx(3) pred-key(2) entry(1) found?(0)
+  if
+    # Found existing entry - add clause to it
+    # Stack: clause(3) pidx(2) pred-key(1) entry(0)
+    3 roll                 # pidx(2) pred-key(1) entry(0) clause
+    swap                   # pidx(2) pred-key(1) clause(0) entry
+    pred-entry-add         # pidx(1) pred-key(0) new-entry
+    rot                    # pred-key(2) new-entry(1) pidx(0)
+    pi-replace             # new-pidx
+  else
+    # New predicate - create fresh entry and add clause
+    # Stack: clause(3) pidx(2) pred-key(1) entry(0) (dummy empty entry)
+    drop                   # clause(2) pidx(1) pred-key(0)
+    rot                    # pidx(2) pred-key(1) clause(0)
+    ai-empty db-empty db-empty make-pred-entry
+    # Stack: pidx(2) pred-key(1) clause(0) empty-entry
+    pred-entry-add         # pidx(1) pred-key(0) new-entry
+    rot                    # pred-key(2) new-entry(1) pidx(0)
+    pi-cons                # new-pidx
+  then
+;
+
+# (db-reverse and ai-reverse-all are defined in term.seq)
+
+# Reverse all clause lists in a PredicateEntry
+: pred-entry-reverse ( PredicateEntry -- PredicateEntry )
+  dup pred-arg-index ai-reverse-all    # entry new-arg-idx
+  over pred-var-clauses db-reverse     # entry new-arg-idx new-var-cls
+  rot pred-all-clauses db-reverse      # new-arg-idx new-var-cls new-all-cls
+  make-pred-entry
+;
+
+# Reverse all clause lists in the entire PredicateIndex
+: finalize-index ( PredicateIndex -- PredicateIndex )
+  dup pi-empty? if
+  else
+    dup pi-key
+    over pi-entry pred-entry-reverse
+    rot pi-rest finalize-index
+    pi-cons
+  then
+;
+
+# ============================================
+# Index Building
+# ============================================
+
+# Build a full predicate index from a flat ClauseDB
+# Uses prepend (O(1)) during building, then reverses all lists
+: build-index ( ClauseDB -- PredicateIndex )
+  pi-empty build-index-loop finalize-index ;
+
+: build-index-loop ( ClauseDB PredicateIndex -- PredicateIndex )
+  swap dup db-empty? if
+    drop
+  else
+    dup db-first           # pidx db clause
+    rot                    # db clause pidx
+    pi-add-clause          # db new-pidx
+    swap db-rest swap      # rest-db new-pidx
+    build-index-loop
+  then
+;
+
+# Look up matching clauses for a goal using the predicate index
+# This is the fast replacement for matching-clauses
+: index-lookup ( Term PredicateIndex -- ClauseDB )
+  # Stack: goal(1) pidx(0)
+  over goal-pred-key       # goal(2) pidx(1) pred-key(0)
+  dup 2 pick               # goal(4) pidx(3) pred-key(2) pred-key-copy(1) pidx-copy(0)
+  pi-lookup                # goal(4) pidx(3) pred-key(2) entry(1) found?(0)
+  if
+    # Found predicate entry
+    # Stack: goal(3) pidx(2) pred-key(1) entry(0)
+    nip nip                # goal(1) entry(0)
+    swap                   # entry(1) goal(0)
+    # If var_clauses is non-empty, use all_clauses for correct clause ordering
+    over pred-var-clauses db-empty? if
+      # No var clauses - safe to use first-arg index
+      goal-first-arg-key   # entry(2) arg-key(1) ground?(0)
+      if
+        # Ground first arg - look up in arg_index
+        over pred-arg-index  # entry(2) arg-key(1) arg-idx(0)
+        ai-lookup            # entry(2) found-clauses(1) found?(0)
+        if
+          nip              # found-clauses (drop entry)
+        else
+          drop pred-all-clauses  # fallback to all clauses
+        then
+      else
+        # Variable first arg in query - return all_clauses
+        drop pred-all-clauses
+      then
+    else
+      # Has var clauses - use all_clauses for correct ordering
+      drop pred-all-clauses
+    then
+  else
+    # Predicate not found in index
+    # Stack: goal(3) pidx(2) pred-key(1) entry(0)
+    drop drop drop drop db-empty
+  then
+;
+
+# ============================================
+# Find Matching Clauses (legacy, kept for reference)
 # ============================================
 
 : matching-clauses ( Term ClauseDB -- ClauseDB )
@@ -302,13 +614,13 @@ union VarMap {
 # ============================================
 
 # run-query: Execute a query and return first solution only
-: run-query ( GoalList ClauseDB -- SolveResult )
+: run-query ( GoalList PredicateIndex -- SolveResult )
   swap subst-empty rot 1000 cpnil solve
   drop  # drop ChoiceStack
 ;
 
 # run-query-all: Execute a query and return first solution + ChoiceStack for enumeration
-: run-query-all ( GoalList ClauseDB -- SolveResult ChoiceStack )
+: run-query-all ( GoalList PredicateIndex -- SolveResult ChoiceStack )
   swap subst-empty rot 1000 cpnil solve
 ;
 
@@ -319,7 +631,7 @@ union VarMap {
 # solve: Main solver with ChoiceStack threading
 # Stack: goals subst db counter choicestack
 # Returns: SolveResult ChoiceStack
-: solve ( GoalList Subst ClauseDB Int ChoiceStack -- SolveResult ChoiceStack )
+: solve ( GoalList Subst PredicateIndex Int ChoiceStack -- SolveResult ChoiceStack )
   # Check for empty goals
   4 pick gnull? if
     # No goals - SUCCESS!
@@ -340,10 +652,10 @@ union VarMap {
     dup builtin? if
       solve-builtin
     else
-      # User-defined predicate - find matching clauses
+      # User-defined predicate - find matching clauses via index
       # Stack: goals subst db counter cs goal
-      3 pick           # get db
-      matching-clauses # Stack: goals subst db counter cs matching
+      3 pick           # get db (PredicateIndex)
+      index-lookup     # Stack: goals subst db counter cs matching
       try-clauses
     then
   then
@@ -355,7 +667,7 @@ union VarMap {
 
 # solve-builtin: Handle built-in predicates with ChoiceStack
 # Stack: goals subst db counter cs goal
-: solve-builtin ( GoalList Subst ClauseDB Int ChoiceStack Term -- SolveResult ChoiceStack )
+: solve-builtin ( GoalList Subst PredicateIndex Int ChoiceStack Term -- SolveResult ChoiceStack )
   # Execute the builtin: goal subst -> UnifyResult
   4 pick             # get subst
   exec-builtin       # Stack: goals subst db counter cs result (6 items)
@@ -403,7 +715,7 @@ union VarMap {
 
 # try-clauses: Try each matching clause with ChoiceStack
 # Stack: goals subst db counter cs matching
-: try-clauses ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB -- SolveResult ChoiceStack )
+: try-clauses ( GoalList Subst PredicateIndex Int ChoiceStack ClauseDB -- SolveResult ChoiceStack )
   dup db-empty? if
     # No more clauses - backtrack via solve-next
     # Stack: goals subst db counter cs matching
@@ -421,7 +733,7 @@ union VarMap {
 
 # try-first-clause: Try unifying with first clause
 # Stack: goals subst db counter cs matching
-: try-first-clause ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB -- SolveResult ChoiceStack )
+: try-first-clause ( GoalList Subst PredicateIndex Int ChoiceStack ClauseDB -- SolveResult ChoiceStack )
   # Get first clause and rename
   dup db-first       # Stack: goals subst db counter cs matching clause (7)
   3 pick             # get counter (8)
@@ -455,7 +767,7 @@ union VarMap {
 
 # unify-success: Unification succeeded, optionally push choice point, continue solving
 # Stack: goals subst db counter cs matching renamed new-counter new-subst (9 items)
-: unify-success ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB Clause Int Subst -- SolveResult ChoiceStack )
+: unify-success ( GoalList Subst PredicateIndex Int ChoiceStack ClauseDB Clause Int Subst -- SolveResult ChoiceStack )
   # Indices: 8=goals 7=subst 6=db 5=counter 4=cs 3=matching 2=renamed 1=new-counter 0=new-subst
 
   # Build combined goals: clause-body ++ rest-of-goals
@@ -478,7 +790,7 @@ union VarMap {
 
 # unify-success-no-cp: No alternative clauses, just continue solving
 # Stack: goals subst db counter cs matching renamed new-counter new-subst combined (10)
-: unify-success-no-cp ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB Clause Int Subst GoalList -- SolveResult ChoiceStack )
+: unify-success-no-cp ( GoalList Subst PredicateIndex Int ChoiceStack ClauseDB Clause Int Subst GoalList -- SolveResult ChoiceStack )
   # Indices: 9=goals 8=subst 7=db 6=counter 5=cs 4=matching 3=renamed 2=new-counter 1=new-subst 0=combined
   # Need: combined new-subst db new-counter cs
 
@@ -507,7 +819,7 @@ union VarMap {
 
 # unify-success-with-cp: Push choice point for alternatives, then continue solving
 # Stack: goals subst db counter cs matching renamed new-counter new-subst combined (10)
-: unify-success-with-cp ( GoalList Subst ClauseDB Int ChoiceStack ClauseDB Clause Int Subst GoalList -- SolveResult ChoiceStack )
+: unify-success-with-cp ( GoalList Subst PredicateIndex Int ChoiceStack ClauseDB Clause Int Subst GoalList -- SolveResult ChoiceStack )
   # Indices: 9=goals 8=subst 7=db 6=counter 5=cs 4=matching 3=renamed 2=new-counter 1=new-subst 0=combined
 
   # Build choice point: make-cp ( GoalList ClauseDB ClauseDB Subst Int -- ChoicePoint )

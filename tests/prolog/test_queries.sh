@@ -408,6 +408,93 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+# === Predicate Index Tests (Phase 4) ===
+
+# Create test file with multiple predicates (tests functor/arity clustering)
+cat > "$TMPDIR/test_multipred.sprolog" << 'MULTIPRED'
+color(red).
+color(blue).
+color(green).
+shape(circle).
+shape(square).
+size(big).
+size(small).
+size(medium).
+MULTIPRED
+
+# Test 33: Multi-predicate functor/arity clustering
+run_test "Index: multi-predicate lookup" \
+    "$TMPDIR/test_multipred.sprolog" \
+    "shape(circle)" \
+    "true\."
+
+# Test 34: Multi-predicate negative (different predicate)
+run_test "Index: cross-predicate negative" \
+    "$TMPDIR/test_multipred.sprolog" \
+    "color(circle)" \
+    "false\."
+
+# Test 35: Multi-predicate query-all
+run_test_all "Index: multi-predicate all solutions" \
+    "$TMPDIR/test_multipred.sprolog" \
+    "size(X)" \
+    "= big"
+
+# Create test file for first-arg indexing
+cat > "$TMPDIR/test_argindex.sprolog" << 'ARGIDX'
+component(engine, piston).
+component(engine, crankshaft).
+component(engine, valve).
+component(brake, pad).
+component(brake, rotor).
+component(wheel, tire).
+component(wheel, rim).
+ARGIDX
+
+# Test 36: First-arg index - specific first arg
+run_test "Index: first-arg specific lookup" \
+    "$TMPDIR/test_argindex.sprolog" \
+    "component(brake, X)" \
+    "= pad"
+
+# Test 37: First-arg index - enumerate all for one arg
+run_test_all "Index: first-arg all solutions" \
+    "$TMPDIR/test_argindex.sprolog" \
+    "component(engine, X)" \
+    "= valve"
+
+# Test 38: First-arg index - negative (no match)
+run_test "Index: first-arg no match" \
+    "$TMPDIR/test_argindex.sprolog" \
+    "component(transmission, X)" \
+    "false\."
+
+# Test 39: Variable first arg falls back to all_clauses
+run_test_all "Index: variable first arg fallback" \
+    "$TMPDIR/test_argindex.sprolog" \
+    "component(X, tire)" \
+    "= wheel"
+
+# Create test file mixing ground and variable-headed clauses
+cat > "$TMPDIR/test_mixedindex.sprolog" << 'MIXED'
+lookup(a, 1).
+lookup(b, 2).
+lookup(c, 3).
+lookup(X, 0) :- X = default.
+MIXED
+
+# Test 40: Mixed index with ground first arg query
+run_test "Index: mixed ground+var clauses" \
+    "$TMPDIR/test_mixedindex.sprolog" \
+    "lookup(b, X)" \
+    "= 2"
+
+# Test 41: Mixed index with variable first arg in query
+run_test "Index: mixed var query fallback" \
+    "$TMPDIR/test_mixedindex.sprolog" \
+    "lookup(default, X)" \
+    "= 0"
+
 echo ""
 echo "=== Results ==="
 echo "Passed: $PASS"

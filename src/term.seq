@@ -495,6 +495,314 @@ union ClauseDB {
 ;
 
 # ============================================
+# ClauseDB Reversal (needed by index building)
+# ============================================
+
+# Reverse a ClauseDB list
+: db-reverse ( ClauseDB -- ClauseDB )
+  db-empty db-reverse-loop ;
+
+: db-reverse-loop ( ClauseDB ClauseDB -- ClauseDB )
+  # Stack: input(1) acc(0)
+  over db-empty? if
+    nip
+  else
+    over db-first          # input acc first
+    swap db-cons           # input new-acc
+    swap db-rest swap      # rest-input new-acc
+    db-reverse-loop
+  then
+;
+
+# ============================================
+# Predicate Index (for fast clause lookup)
+# ============================================
+
+# --- String hashing for bucket indexing ---
+
+# Compute a simple hash of a string, returning 0..255
+# Uses sum of character codes with mixing
+: string-hash ( String -- Int )
+  0 0 string-hash-loop 256 i.% drop ;
+
+: string-hash-loop ( String Int Int -- Int )
+  # Stack: str(2) pos(1) acc(0)
+  2 pick string.length over i.<= if
+    nip nip  # pos >= length, return acc
+  else
+    2 pick over string.char-at  # str pos acc char
+    i.+                          # str pos new-acc
+    swap 1 i.+ swap              # str pos+1 new-acc
+    string-hash-loop
+  then
+;
+
+# --- Flat bucket: association list within a hash bucket ---
+
+union FlatBucket {
+  FBEmpty
+  FBCons { key: String, clauses: ClauseDB, rest: FlatBucket }
+}
+
+: fb-empty ( -- FlatBucket ) Make-FBEmpty ;
+: fb-cons ( String ClauseDB FlatBucket -- FlatBucket ) Make-FBCons ;
+
+: fb-empty? ( FlatBucket -- Bool )
+  match
+    FBEmpty -> true
+    FBCons -> drop drop drop false
+  end
+;
+
+: fb-key ( FlatBucket -- String ) 0 variant.field-at ;
+: fb-clauses ( FlatBucket -- ClauseDB ) 1 variant.field-at ;
+: fb-rest ( FlatBucket -- FlatBucket ) 2 variant.field-at ;
+
+# Lookup in flat bucket by exact key
+: fb-lookup ( String FlatBucket -- ClauseDB Bool )
+  dup fb-empty? if
+    drop drop db-empty false
+  else
+    dup fb-key
+    2 pick string.equal? if
+      nip fb-clauses true
+    else
+      fb-rest fb-lookup
+    then
+  then
+;
+
+# Prepend clause to matching key's list (or create new entry)
+: fb-add ( String Clause FlatBucket -- FlatBucket )
+  # Stack: key(2) clause(1) bucket(0)
+  dup fb-empty? if
+    drop
+    db-empty db-cons
+    fb-empty fb-cons
+  else
+    dup fb-key
+    3 pick string.equal? if
+      # Match - prepend clause
+      swap
+      over fb-clauses
+      db-cons
+      swap fb-rest
+      fb-cons
+    else
+      # No match - recurse on rest
+      dup fb-rest
+      3 pick
+      3 pick
+      rot
+      fb-add
+      swap dup fb-key
+      swap fb-clauses
+      rot
+      fb-cons
+      nip nip
+    then
+  then
+;
+
+# Reverse all clause lists in a flat bucket
+: fb-reverse-all ( FlatBucket -- FlatBucket )
+  dup fb-empty? if
+  else
+    dup fb-key
+    over fb-clauses db-reverse
+    rot fb-rest fb-reverse-all
+    fb-cons
+  then
+;
+
+# --- Hash-bucketed ArgIndex: 256-slot hash table ---
+# Implemented as a balanced binary trie of depth 8 (256 leaves)
+
+union ArgIndex {
+  AILeaf { bucket: FlatBucket }
+  AINode { left: ArgIndex, right: ArgIndex }
+}
+
+: ai-leaf ( FlatBucket -- ArgIndex ) Make-AILeaf ;
+: ai-node ( ArgIndex ArgIndex -- ArgIndex ) Make-AINode ;
+
+: ai-leaf? ( ArgIndex -- Bool )
+  match
+    AILeaf -> drop true
+    AINode -> drop drop false
+  end
+;
+
+: ai-leaf-bucket ( ArgIndex -- FlatBucket ) 0 variant.field-at ;
+: ai-node-left ( ArgIndex -- ArgIndex ) 0 variant.field-at ;
+: ai-node-right ( ArgIndex -- ArgIndex ) 1 variant.field-at ;
+
+# Build empty trie of given depth
+: ai-make-empty ( Int -- ArgIndex )
+  dup 0 i.<= if
+    drop fb-empty ai-leaf
+  else
+    1 i.-
+    dup ai-make-empty
+    swap ai-make-empty
+    ai-node
+  then
+;
+
+# Build standard empty 256-slot ArgIndex
+: ai-empty ( -- ArgIndex )
+  8 ai-make-empty ;
+
+# --- Trie navigation helper (read-only, one level) ---
+# Takes one step down the trie based on lowest hash bit
+: ai-nav ( Int ArgIndex -- Int ArgIndex )
+  # Stack: hash(1) node(0)
+  over                     # hash node hash
+  2 i.% drop               # hash node bit
+  0 i.= if
+    ai-node-left           # hash child
+  else
+    ai-node-right          # hash child
+  then
+  swap 2 i./ drop swap     # hash/2 child
+;
+
+# Lookup in hash-bucketed ArgIndex (iterative 8-level descent)
+: ai-lookup ( String ArgIndex -- ClauseDB Bool )
+  over string-hash swap    # key hash index
+  ai-nav ai-nav ai-nav ai-nav ai-nav ai-nav ai-nav ai-nav
+  # key hash' leaf
+  nip ai-leaf-bucket fb-lookup
+;
+
+# Add clause to hash-bucketed ArgIndex
+: ai-add ( String Clause ArgIndex -- ArgIndex )
+  2 pick string-hash       # key clause index hash
+  8 ai-add-rec             # result
+;
+
+# Recursive trie add with path rebuilding
+# Stack: key(4) clause(3) node(2) hash(1) depth(0)
+: ai-add-rec ( String Clause ArgIndex Int Int -- ArgIndex )
+  dup 0 i.<= if
+    # At leaf - add to flat bucket
+    drop drop              # key(2) clause(1) node(0)
+    ai-leaf-bucket         # key(2) clause(1) bucket(0)
+    fb-add                 # new-bucket
+    ai-leaf                # new-leaf
+  else
+    # At node - check hash bit for direction
+    over                   # key(5) clause(4) node(3) hash(2) depth(1) hash-copy(0)
+    2 i.% drop             # key(5) clause(4) node(3) hash(2) depth(1) bit(0)
+    0 i.= if
+      # Go LEFT
+      # Stack: key(4) clause(3) node(2) hash(1) depth(0) — 5 items
+      # Save right sibling from current node
+      2 pick ai-node-right # 6 items: ...right(0)
+      # Push recursive call args: key clause left hash/2 depth-1
+      5 pick               # 7: copy key
+      5 pick               # 8: copy clause
+      5 pick ai-node-left  # 9: get left child from node
+      5 pick 2 i./ drop    # 10: hash/2
+      5 pick 1 i.-         # 11: depth-1
+      ai-add-rec           # 7: key(6) clause(5) node(4) hash(3) depth(2) right(1) new-left(0)
+      # Rebuild: ai-node(new-left, right)
+      swap ai-node         # 6: key(5) clause(4) node(3) hash(2) depth(1) new-node(0)
+      nip nip nip nip nip  # 1: new-node
+    else
+      # Go RIGHT
+      # Stack: key(4) clause(3) node(2) hash(1) depth(0) — 5 items
+      # Save left sibling from current node
+      2 pick ai-node-left  # 6 items: ...left(0)
+      # Push recursive call args: key clause right hash/2 depth-1
+      5 pick               # 7: copy key
+      5 pick               # 8: copy clause
+      5 pick ai-node-right # 9: get right child from node
+      5 pick 2 i./ drop    # 10: hash/2
+      5 pick 1 i.-         # 11: depth-1
+      ai-add-rec           # 7: key(6) clause(5) node(4) hash(3) depth(2) left(1) new-right(0)
+      # Rebuild: ai-node(left, new-right) — left already deeper on stack
+      ai-node              # 6: key(5) clause(4) node(3) hash(2) depth(1) new-node(0)
+      nip nip nip nip nip  # 1: new-node
+    then
+  then
+;
+
+# Reverse all clause lists in the entire trie
+: ai-reverse-all ( ArgIndex -- ArgIndex )
+  dup ai-leaf? if
+    ai-leaf-bucket
+    fb-reverse-all
+    ai-leaf
+  else
+    dup ai-node-left ai-reverse-all
+    swap ai-node-right ai-reverse-all
+    ai-node
+  then
+;
+
+# Predicate entry: all clauses for one functor/arity
+union PredicateEntry {
+  PredEntry { arg_index: ArgIndex, var_clauses: ClauseDB, all_clauses: ClauseDB }
+}
+
+: make-pred-entry ( ArgIndex ClauseDB ClauseDB -- PredicateEntry )
+  Make-PredEntry ;
+
+: pred-arg-index ( PredicateEntry -- ArgIndex )
+  0 variant.field-at ;
+
+: pred-var-clauses ( PredicateEntry -- ClauseDB )
+  1 variant.field-at ;
+
+: pred-all-clauses ( PredicateEntry -- ClauseDB )
+  2 variant.field-at ;
+
+# Top-level index: maps "functor/arity" → PredicateEntry
+union PredicateIndex {
+  PIEmpty
+  PICons { key: String, entry: PredicateEntry, rest: PredicateIndex }
+}
+
+: pi-empty ( -- PredicateIndex )
+  Make-PIEmpty ;
+
+: pi-cons ( String PredicateEntry PredicateIndex -- PredicateIndex )
+  Make-PICons ;
+
+: pi-empty? ( PredicateIndex -- Bool )
+  match
+    PIEmpty -> true
+    PICons -> drop drop drop false
+  end
+;
+
+: pi-key ( PredicateIndex -- String )
+  0 variant.field-at ;
+
+: pi-entry ( PredicateIndex -- PredicateEntry )
+  1 variant.field-at ;
+
+: pi-rest ( PredicateIndex -- PredicateIndex )
+  2 variant.field-at ;
+
+# Lookup a predicate entry by functor/arity key
+# Returns ( PredicateEntry Bool )
+: pi-lookup ( String PredicateIndex -- PredicateEntry Bool )
+  dup pi-empty? if
+    drop drop
+    ai-empty db-empty db-empty make-pred-entry false
+  else
+    dup pi-key
+    2 pick string.equal? if
+      nip pi-entry true
+    else
+      pi-rest pi-lookup
+    then
+  then
+;
+
+# ============================================
 # Variable Bindings and Substitution
 # ============================================
 
@@ -580,13 +888,13 @@ union ChoicePoint {
   #   goals: The goal list we're trying to solve (goal::rest format)
   #   untried_clauses: Remaining clauses to try for the current goal
   #                    (excludes the clause we already tried successfully)
-  #   full_db: Complete clause database for recursive solving
+  #   full_db: PredicateIndex for fast indexed clause lookup
   #   state: Substitution and variable counter bundled together
-  CP { goals: GoalList, untried_clauses: ClauseDB, full_db: ClauseDB, state: SolveState }
+  CP { goals: GoalList, untried_clauses: ClauseDB, full_db: PredicateIndex, state: SolveState }
 }
 
-: make-cp ( GoalList ClauseDB ClauseDB Subst Int -- ChoicePoint )
-  # Args: goals, untried_clauses, full_db, subst, counter
+: make-cp ( GoalList ClauseDB PredicateIndex Subst Int -- ChoicePoint )
+  # Args: goals, untried_clauses, full_db (PredicateIndex), subst, counter
   make-solve-state Make-CP ;
 
 : cp-goals ( ChoicePoint -- GoalList )
@@ -596,8 +904,8 @@ union ChoicePoint {
   # Returns the clauses we haven't tried yet for this goal
   1 variant.field-at ;
 
-: cp-full-db ( ChoicePoint -- ClauseDB )
-  # Returns the complete clause database (for recursive solving)
+: cp-full-db ( ChoicePoint -- PredicateIndex )
+  # Returns the predicate index (for recursive solving)
   2 variant.field-at ;
 
 : cp-state ( ChoicePoint -- SolveState )
