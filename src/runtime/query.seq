@@ -236,6 +236,294 @@ include "solve"
 ;
 
 # ============================================
+# JSON Output Support
+# ============================================
+
+# Escape special characters in strings for JSON output.
+# Escapes backslash, double quote, newline, tab, carriage return.
+
+: json-escape-string-loop ( String Int String -- String )
+  # Stack: input pos acc
+  2 pick string.length 2 pick i.<= if
+    # pos >= length: done, return accumulator
+    nip nip
+  else
+    # Get char at input[pos]
+    2 pick 2 pick string.char-at
+    dup 92 i.= if
+      # Backslash (92) -> double it
+      drop
+      92 char->string 92 char->string string.concat
+      string.concat
+      swap 1 i.add swap
+      json-escape-string-loop
+    else dup 34 i.= if
+      # Double quote (34) -> escape with backslash
+      drop
+      92 char->string 34 char->string string.concat
+      string.concat
+      swap 1 i.add swap
+      json-escape-string-loop
+    else dup 10 i.= if
+      # Newline (10) -> \n
+      drop
+      92 char->string 110 char->string string.concat
+      string.concat
+      swap 1 i.add swap
+      json-escape-string-loop
+    else dup 9 i.= if
+      # Tab (9) -> \t
+      drop
+      92 char->string 116 char->string string.concat
+      string.concat
+      swap 1 i.add swap
+      json-escape-string-loop
+    else dup 13 i.= if
+      # Carriage return (13) -> \r
+      drop
+      92 char->string 114 char->string string.concat
+      string.concat
+      swap 1 i.add swap
+      json-escape-string-loop
+    else
+      # Regular char -> append as-is
+      char->string string.concat
+      swap 1 i.add swap
+      json-escape-string-loop
+    then then then then then
+  then
+;
+
+: json-escape-string ( String -- String )
+  0 "" json-escape-string-loop ;
+
+# Convert a resolved Term to its JSON string representation
+: term-to-json ( Term -- String )
+  dup tatom? if
+    dup tatom-name "true" string.equal? if
+      drop "true"
+    else dup tatom-name "false" string.equal? if
+      drop "false"
+    else dup tempty-list? if
+      drop "[]"
+    else
+      # Regular atom -> JSON string
+      tatom-name json-escape-string
+      "\"" swap string.concat "\"" string.concat
+    then then then
+  else
+    dup tint? if
+      tint-value int->string
+    else
+      dup tfloat? if
+        tfloat-value float->string
+      else
+        dup tvar? if
+          # Unbound variable -> null
+          drop "null"
+        else
+          dup tproper-list? if
+            # Proper list -> JSON array
+            "[" swap json-list-contents string.concat
+            "]" string.concat
+          else
+            # Compound or improper list -> Prolog notation as string
+            term-to-string json-escape-string
+            "\"" swap string.concat "\"" string.concat
+          then
+        then
+      then
+    then
+  then
+;
+
+# Serialize elements of a proper Prolog list as comma-separated JSON
+: json-list-contents ( Term -- String )
+  dup tempty-list? if
+    drop ""
+  else
+    dup tlist-head term-to-json
+    swap tlist-tail
+    dup tempty-list? if
+      drop
+    else
+      ", " swap json-list-contents string.concat string.concat
+    then
+  then
+;
+
+# Build a JSON object string from variable bindings
+# Iterates VarMap, looks up each variable in Subst, serializes with term-to-json
+: json-bindings ( Subst VarMap -- String )
+  over subst-empty? if
+    drop drop "{}"
+  else
+    dup vm-empty? if
+      drop drop "{}"
+    else
+      "{" json-bindings-loop "}" string.concat
+    then
+  then
+;
+
+# Accumulates "key": value pairs into a JSON object body
+: json-bindings-loop ( Subst VarMap String -- String )
+  over vm-empty? if
+    # Done - return accumulated string
+    nip nip
+  else
+    # Get this query var's id
+    over vm-id
+    # Stack: subst varmap acc id
+
+    # Look up id in substitution
+    3 pick subst-lookup
+    # Stack: subst varmap acc Bool Term
+    swap if
+      # Found binding - resolve and serialize
+      # Stack: subst varmap acc Term
+      3 pick apply-subst  # Stack: subst varmap acc ResolvedTerm
+      2 pick vm-name      # Stack: subst varmap acc ResolvedTerm name
+      # Build "name": value
+      json-escape-string
+      "\"" swap string.concat "\": " string.concat
+      swap term-to-json string.concat
+      # Stack: subst varmap acc pair-string
+      # If acc is just "{" (first entry), concat directly; otherwise add comma
+      over "{" string.equal? if
+        string.concat
+      else
+        swap ", " string.concat swap string.concat
+      then
+      # Stack: subst varmap new-acc
+      swap vm-rest swap
+      json-bindings-loop
+    else
+      # Not found - skip this var
+      drop
+      # Stack: subst varmap acc
+      swap vm-rest swap
+      json-bindings-loop
+    then
+  then
+;
+
+# Check if --format json was specified (at arg positions 3 and 4)
+: format-json? ( -- Bool )
+  args.count 5 i.>=
+  3 args.at "--format" string.equal? and
+  4 args.at "json" string.equal? and
+;
+
+# JSON entry point for --query (single solution)
+: run-query-from-string-json ( String ClauseDB -- )
+  swap parse-query-string
+  # Stack: ClauseDB GoalList VarMap success?
+  if
+    rot                # Stack: GoalList VarMap ClauseDB
+    rot                # Stack: VarMap ClauseDB GoalList
+    swap               # Stack: VarMap GoalList ClauseDB
+    run-query-offset   # Stack: VarMap SolveResult
+    swap               # Stack: SolveResult VarMap
+    json-single-result
+  else
+    drop drop drop
+    "{\"error\": \"Failed to parse query\"}" io.write-line
+  then
+;
+
+# Print a single result in JSON format
+: json-single-result ( SolveResult VarMap -- )
+  over solve-success? if
+    swap solve-success-subst swap json-bindings
+    "{\"solutions\": [" swap string.concat
+    "], \"exhausted\": false}" string.concat
+    io.write-line
+  else
+    drop
+    dup solve-failure? if
+      drop
+      "{\"solutions\": [], \"exhausted\": true}" io.write-line
+    else
+      solve-error-message json-escape-string
+      "{\"error\": \"" swap string.concat "\"}" string.concat
+      io.write-line
+    then
+  then
+;
+
+# JSON entry point for --query-all (all solutions)
+: run-query-all-from-string-json ( String ClauseDB -- )
+  swap parse-query-string
+  # Stack: ClauseDB GoalList VarMap success?
+  if
+    rot                # Stack: GoalList VarMap ClauseDB
+    rot                # Stack: VarMap ClauseDB GoalList
+    swap               # Stack: VarMap GoalList ClauseDB
+    run-query-all      # Stack: VarMap SolveResult ChoiceStack
+    rot                # Stack: SolveResult ChoiceStack VarMap
+    json-all-results
+  else
+    drop drop drop
+    "{\"error\": \"Failed to parse query\"}" io.write-line
+  then
+;
+
+# Print all results in JSON format
+: json-all-results ( SolveResult ChoiceStack VarMap -- )
+  2 pick solve-success? if
+    # Collect all solutions recursively into a comma-separated string
+    json-collect-all
+    "{\"solutions\": [" swap string.concat
+    "], \"exhausted\": true}" string.concat
+    io.write-line
+  else
+    drop drop  # drop cs varmap
+    dup solve-failure? if
+      drop
+      "{\"solutions\": [], \"exhausted\": true}" io.write-line
+    else
+      solve-error-message json-escape-string
+      "{\"error\": \"" swap string.concat "\"}" string.concat
+      io.write-line
+    then
+  then
+;
+
+# Recursively collect all solutions into a comma-separated string of JSON objects.
+# Uses the call stack for accumulation: each recursive call returns the rest,
+# and we prepend the current solution with a comma separator.
+: json-collect-all ( SolveResult ChoiceStack VarMap -- String )
+  2 pick solve-success? if
+    # Get current solution's bindings as JSON object string
+    2 pick solve-success-subst
+    over json-bindings
+    # Stack: result cs varmap bindings-str
+
+    # Rearrange to call solve-next on ChoiceStack
+    swap        # Stack: result cs bindings-str varmap
+    rot         # Stack: result bindings-str varmap cs
+    solve-next  # Stack: result bindings-str varmap new-result new-cs
+    rot         # Stack: result bindings-str new-result new-cs varmap
+
+    # Recurse to collect remaining solutions
+    json-collect-all
+    # Stack: result bindings-str rest-string
+
+    # Combine: if rest is empty, just bindings; otherwise bindings + ", " + rest
+    dup string.empty? if
+      drop nip
+    else
+      swap ", " string.concat swap string.concat
+      nip
+    then
+  else
+    # No more solutions - return empty string
+    drop drop drop ""
+  then
+;
+
+# ============================================
 # CLI Interface
 # ============================================
 
@@ -248,13 +536,23 @@ include "solve"
   1 args.at "--query" string.equal? and if
     2 args.at
     # Stack: ClauseDB query-string
-    swap run-query-from-string
+    swap
+    format-json? if
+      run-query-from-string-json
+    else
+      run-query-from-string
+    then
   else
     args.count 3 i.>=
     1 args.at "--query-all" string.equal? and if
       2 args.at
       # Stack: ClauseDB query-string
-      swap run-query-all-from-string
+      swap
+      format-json? if
+        run-query-all-from-string-json
+      else
+        run-query-all-from-string
+      then
     else
       # Any other invocation prints usage (including --help, -h, or no args)
       drop print-query-usage
@@ -358,12 +656,13 @@ include "solve"
 ;
 
 : print-query-usage ( -- )
-  "Usage: <program> --query \"goal(X, Y)\"" io.write-line
-  "       <program> --query-all \"goal(X, Y)\"" io.write-line
+  "Usage: <program> --query \"goal(X, Y)\" [--format json]" io.write-line
+  "       <program> --query-all \"goal(X, Y)\" [--format json]" io.write-line
   "" io.write-line
   "Options:" io.write-line
   "  --query <query>      Execute a Prolog query (first solution)" io.write-line
   "  --query-all <query>  Execute a Prolog query (all solutions)" io.write-line
+  "  --format json        Output results as JSON" io.write-line
   "  --help, -h           Show this help" io.write-line
   "" io.write-line
   "Note: --query-all may loop on recursive rules (e.g. ancestor)." io.write-line
