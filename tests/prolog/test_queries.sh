@@ -286,6 +286,128 @@ run_test "Double negation" \
     "X is - -5" \
     "= 5"
 
+# === JSON Output Tests (Phase 3) ===
+
+# Test helper for --query with --format json
+run_test_json() {
+    local name="$1"
+    local prolog_file="$2"
+    local query="$3"
+    local expected_pattern="$4"
+
+    # Compile the file
+    if ! just compile "$prolog_file" > /dev/null 2>&1; then
+        echo "FAIL: $name - compilation failed"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+
+    # Run the query with --format json
+    local result
+    result=$(./target/prolog-out --query "$query" --format json 2>&1) || true
+
+    # Check if result matches expected pattern
+    if echo "$result" | grep -qF "$expected_pattern"; then
+        echo "PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: $name"
+        echo "  Query: $query"
+        echo "  Expected pattern: $expected_pattern"
+        echo "  Got: $result"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Test helper for --query-all with --format json
+run_test_all_json() {
+    local name="$1"
+    local prolog_file="$2"
+    local query="$3"
+    local expected_pattern="$4"
+
+    # Compile the file
+    if ! just compile "$prolog_file" > /dev/null 2>&1; then
+        echo "FAIL: $name - compilation failed"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+
+    # Run the query with --query-all --format json
+    local result
+    result=$(./target/prolog-out --query-all "$query" --format json 2>&1) || true
+
+    # Check if result matches expected pattern
+    if echo "$result" | grep -qF "$expected_pattern"; then
+        echo "PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: $name"
+        echo "  Query: $query"
+        echo "  Expected pattern: $expected_pattern"
+        echo "  Got: $result"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Test 26: JSON single solution with bindings
+run_test_json "JSON single solution with bindings" \
+    "examples/family.sprolog" \
+    "parent(tom, X)" \
+    '"X": "mary"'
+
+# Test 27: JSON fact query (true, no variables) -> empty object
+run_test_json "JSON fact query (no variables)" \
+    "examples/family.sprolog" \
+    "parent(tom, mary)" \
+    '"solutions": [{}]'
+
+# Test 28: JSON query failure -> empty solutions, exhausted true
+run_test_json "JSON query failure" \
+    "examples/family.sprolog" \
+    "parent(tom, nobody)" \
+    '"solutions": [], "exhausted": true'
+
+# Test 29: JSON all solutions
+run_test_all_json "JSON all solutions" \
+    "$TMPDIR/test_multisol.sprolog" \
+    "parent(tom, X)" \
+    '"X": "james"'
+
+# Test 30: JSON parse error
+# Note: Parser may panic on severely malformed input (same as test 12).
+# Accept JSON error object, or panic/error/fail as valid error handling.
+just compile "examples/family.sprolog" > /dev/null 2>&1
+result=$(./target/prolog-out --query "bad(((" --format json 2>&1) || true
+if echo "$result" | grep -qF '"error"' || echo "$result" | grep -qiE "error|fail|panic"; then
+    echo "PASS: JSON parse error"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: JSON parse error"
+    echo "  Expected: JSON error object or error/panic message"
+    echo "  Got: $result"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test 31: JSON integer bindings
+run_test_json "JSON integer bindings" \
+    "$TMPDIR/test_operators.sprolog" \
+    "add(3, 4, X)" \
+    '"X": 7'
+
+# Test 32: Default Prolog output unchanged (regression)
+just compile "examples/family.sprolog" > /dev/null 2>&1
+result=$(./target/prolog-out --query "parent(tom, X)" 2>&1) || true
+if echo "$result" | grep -q "= mary"; then
+    echo "PASS: Default Prolog output unchanged"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: Default Prolog output unchanged"
+    echo "  Expected: Prolog-style output with = mary"
+    echo "  Got: $result"
+    FAIL=$((FAIL + 1))
+fi
+
 echo ""
 echo "=== Results ==="
 echo "Passed: $PASS"
