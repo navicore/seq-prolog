@@ -222,6 +222,58 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+# === Operator Parsing Tests (Phase 2.5) ===
+
+# Create test file for operator parsing
+cat > "$TMPDIR/test_operators.sprolog" << 'OPERATORS'
+add(X, Y, Z) :- Z is X + Y.
+double(X, Y) :- Y is X * 2.
+big(X) :- X > 100.
+remainder(X, Y, Z) :- Z is X mod Y.
+OPERATORS
+
+# Test 17: Arithmetic is/2 in rule
+run_test "Arithmetic is/2 in rule" \
+    "$TMPDIR/test_operators.sprolog" \
+    "add(3, 4, X)" \
+    "= 7"
+
+# Test 18: Multiplication in rule
+run_test "Multiplication in rule" \
+    "$TMPDIR/test_operators.sprolog" \
+    "double(5, X)" \
+    "= 10"
+
+# Test 19: Comparison in rule (positive)
+run_test "Comparison in rule (positive)" \
+    "$TMPDIR/test_operators.sprolog" \
+    "big(200)" \
+    "true\."
+
+# Test 20: Comparison in rule (negative)
+run_test "Comparison in rule (negative)" \
+    "$TMPDIR/test_operators.sprolog" \
+    "big(50)" \
+    "false\."
+
+# Test 21: Operator precedence (* before +) in query
+run_test "Operator precedence (* before +)" \
+    "$TMPDIR/test_operators.sprolog" \
+    "X is 2 + 3 * 4" \
+    "= 14"
+
+# Test 22: Parenthesized expression in query
+run_test "Parenthesized expression" \
+    "$TMPDIR/test_operators.sprolog" \
+    "X is (2 + 3) * 4" \
+    "= 20"
+
+# Test 23: Mod operator in rule
+run_test "Mod operator in rule" \
+    "$TMPDIR/test_operators.sprolog" \
+    "remainder(10, 3, X)" \
+    "= 1"
+
 echo ""
 echo "=== Results ==="
 echo "Passed: $PASS"
