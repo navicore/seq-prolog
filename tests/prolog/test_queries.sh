@@ -274,6 +274,18 @@ run_test "Mod operator in rule" \
     "remainder(10, 3, X)" \
     "= 1"
 
+# Test 24: Binary minus with negative number (5 - -3 = 8)
+run_test "Binary minus with negative literal" \
+    "$TMPDIR/test_operators.sprolog" \
+    "X is 5 - -3" \
+    "= 8"
+
+# Test 25: Double negation (- -5 = 5)
+run_test "Double negation" \
+    "$TMPDIR/test_operators.sprolog" \
+    "X is - -5" \
+    "= 5"
+
 echo ""
 echo "=== Results ==="
 echo "Passed: $PASS"
