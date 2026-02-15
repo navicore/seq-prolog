@@ -275,7 +275,7 @@ include "version"
         # Stack: counter body_tokens HeadTerm
         rot rot  # Stack: HeadTerm counter body_tokens
         swap  # Stack: HeadTerm body_tokens counter
-        parse-term-with-counter
+        parse-goals-with-counter
         # Stack: HeadTerm BodyResult counter
         over parse-ok-term? if
           over parse-term-remaining
@@ -389,10 +389,7 @@ include "version"
         drop
       then
       over  # Stack: db GoalList db
-      dup rot  # Stack: db db GoalList db
-      run-query-all  # Stack: db db SolveResult ChoiceStack
-      rot  # Stack: db SolveResult ChoiceStack db
-      drop  # Stack: db SolveResult ChoiceStack
+      run-query-all  # Stack: db SolveResult ChoiceStack
       display-all-solutions  # Stack: db
     else
       # Stack: db result
