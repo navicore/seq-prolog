@@ -8,7 +8,11 @@
       "Bash(just compile:*)",
       "Bash(./target/prolog-out:*)",
       "Bash(seqc lint:*)",
-      "Bash(just ci:*)"
+      "Bash(just ci:*)",
+      "Bash(bash /Users/navicore/git/navicore/seq-prolog/tests/prolog/test_queries.sh)",
+      "Bash(just query-test:*)",
+      "Bash(bash /Users/navicore/git/navicore/seq-prolog/benchmarks/run.sh)",
+      "Bash(time:*)"
     ]
   }
 }
