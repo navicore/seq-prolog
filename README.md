@@ -1,3 +1,8 @@
+<!-- ghmig:moved -->
+> **This repository has moved to [https://git.navicore.tech/navicore/seq-prolog](https://git.navicore.tech/navicore/seq-prolog).**
+>
+> The GitHub copy is archived and no longer maintained.
+
 # SeqProlog
 
 A **Prolog interpreter** written in [Seq](https://github.com/navicore/patch-seq), a concatenative stack-based programming language.
